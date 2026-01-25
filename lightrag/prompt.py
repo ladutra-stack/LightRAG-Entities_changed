@@ -1,5 +1,7 @@
 from __future__ import annotations
 from typing import Any
+import os
+import json
 
 
 PROMPTS: dict[str, Any] = {}
@@ -99,7 +101,7 @@ Based on the last extraction task, identify and extract any **missed or incorrec
 <Output>
 """
 
-PROMPTS["entity_extraction_examples"] = [
+_DEFAULT_ENTITY_EXTRACTION_EXAMPLES = [
     """<Entity_types>
 ["Person","Creature","Organization","Location","Event","Concept","Method","Content","Data","Artifact","NaturalObject"]
 
@@ -181,6 +183,54 @@ relation{tuple_delimiter}Noah Carter{tuple_delimiter}World Athletics Championshi
 
 """,
 ]
+
+
+def _load_entity_extraction_examples() -> list[str]:
+    """
+    Load entity extraction examples from environment variable or use defaults.
+    
+    This function checks for the 'entity_extraction_examples' environment variable.
+    If found, it attempts to parse it as JSON. The variable should contain a JSON-encoded
+    list of strings, where each string is an extraction example.
+    
+    Returns:
+        A list of entity extraction example strings. If the environment variable
+        'entity_extraction_examples' is set and valid, returns its parsed value.
+        Otherwise, falls back to the default examples defined in the module.
+    
+    Warns if the environment variable is set but invalid or unparseable, then falls back
+    to defaults.
+    """
+    env_examples = os.getenv("entity_extraction_examples")
+    
+    if env_examples:
+        try:
+            # Try to parse as JSON
+            loaded_examples = json.loads(env_examples)
+            
+            # Validate that it's a list of strings
+            if isinstance(loaded_examples, list) and all(isinstance(ex, str) for ex in loaded_examples):
+                return loaded_examples
+            else:
+                print(
+                    "Warning: entity_extraction_examples environment variable is not a valid list of strings. "
+                    "Falling back to default examples."
+                )
+                return _DEFAULT_ENTITY_EXTRACTION_EXAMPLES
+        except json.JSONDecodeError as e:
+            print(
+                f"Warning: entity_extraction_examples environment variable could not be parsed as JSON: {e}. "
+                "Falling back to default examples."
+            )
+            return _DEFAULT_ENTITY_EXTRACTION_EXAMPLES
+    
+    # No environment variable set, use defaults
+    return _DEFAULT_ENTITY_EXTRACTION_EXAMPLES
+
+
+# Load entity extraction examples from environment or use defaults
+PROMPTS["entity_extraction_examples"] = _load_entity_extraction_examples()
+
 
 PROMPTS["summarize_entity_descriptions"] = """---Role---
 You are a Knowledge Graph Specialist, proficient in data curation and synthesis.
