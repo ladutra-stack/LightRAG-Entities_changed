@@ -2301,6 +2301,7 @@ class LightRAG:
                 entity_name = entity_data["entity_name"]
                 entity_type = entity_data.get("entity_type", "UNKNOWN")
                 description = entity_data.get("description", "No description provided")
+                function = entity_data.get("function", "unknown")
                 source_chunk_id = entity_data.get("source_id", "UNKNOWN")
                 source_id = chunk_to_source_map.get(source_chunk_id, "UNKNOWN")
                 file_path = entity_data.get("file_path", "custom_kg")
@@ -2316,6 +2317,7 @@ class LightRAG:
                     "entity_id": entity_name,
                     "entity_type": entity_type,
                     "description": description,
+                    "function": function,
                     "source_id": source_id,
                     "file_path": file_path,
                     "created_at": int(time.time()),

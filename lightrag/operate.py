@@ -382,10 +382,10 @@ async def _handle_single_entity_extraction(
     timestamp: int,
     file_path: str = "unknown_source",
 ):
-    if len(record_attributes) != 4 or "entity" not in record_attributes[0]:
+    if len(record_attributes) != 5 or "entity" not in record_attributes[0]:
         if len(record_attributes) > 1 and "entity" in record_attributes[0]:
             logger.warning(
-                f"{chunk_key}: LLM output format error; found {len(record_attributes)}/4 feilds on ENTITY `{record_attributes[1]}` @ `{record_attributes[2] if len(record_attributes) > 2 else 'N/A'}`"
+                f"{chunk_key}: LLM output format error; found {len(record_attributes)}/5 fields on ENTITY `{record_attributes[1]}` @ `{record_attributes[2] if len(record_attributes) > 2 else 'N/A'}`"
             )
             logger.debug(record_attributes)
         return None
@@ -427,10 +427,20 @@ async def _handle_single_entity_extraction(
             )
             return None
 
+        # Process entity function with same cleaning pipeline
+        entity_function = sanitize_and_normalize_extracted_text(record_attributes[4])
+
+        if not entity_function.strip():
+            logger.warning(
+                f"Entity extraction warning: empty function for entity '{entity_name}' of type '{entity_type}'"
+            )
+            entity_function = "unknown"  # Set default value instead of rejecting
+
         return dict(
             entity_name=entity_name,
             entity_type=entity_type,
             description=entity_description,
+            function=entity_function,
             source_id=chunk_key,
             file_path=file_path,
             timestamp=timestamp,
@@ -1484,6 +1494,7 @@ async def _rebuild_single_relationship(
                 "entity_id": node_id,
                 "source_id": node_source_id,
                 "description": node_description,
+                "function": "unknown",
                 "entity_type": "UNKNOWN",
                 "file_path": node_file_path,
                 "created_at": node_created_at,
@@ -2176,6 +2187,7 @@ async def _merge_edges_then_upsert(
                 "entity_id": need_insert_id,
                 "source_id": source_id,
                 "description": description,
+                "function": "unknown",
                 "entity_type": "UNKNOWN",
                 "file_path": file_path,
                 "created_at": node_created_at,
