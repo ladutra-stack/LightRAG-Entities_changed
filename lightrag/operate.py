@@ -39,6 +39,8 @@ from lightrag.utils import (
     apply_source_ids_limit,
     merge_source_ids,
     make_relation_chunk_key,
+    normalize_entity_for_dedup,
+    find_duplicate_entity,
 )
 from lightrag.base import (
     BaseGraphStorage,
@@ -1712,7 +1714,24 @@ async def _merge_nodes_then_upsert(
         reverse=True,
     )[0][0]
 
-    # 7. Deduplicate nodes by description, keeping first occurrence in the same document
+    # 7. Deduplicate nodes by description and intelligent entity name matching
+    # First, try to detect if we're dealing with duplicate entities at the name level
+    duplicate_entity_name = None
+    if len(nodes_data) > 1:
+        entity_names = [dp.get("entity_name", entity_name) for dp in nodes_data]
+        # Check if any names appear to be duplicates (plural, singular, acronyms, etc.)
+        duplicate_entity_name, dup_score = find_duplicate_entity(
+            entity_name, 
+            entity_names,
+            similarity_threshold=0.8
+        )
+        if duplicate_entity_name and duplicate_entity_name != entity_name:
+            logger.info(
+                f"Entity dedup: Found potential duplicate entity names - "
+                f"'{entity_name}' vs '{duplicate_entity_name}' (similarity: {dup_score:.2f})"
+            )
+    
+    # Deduplicate nodes by description, keeping first occurrence in the same document
     unique_nodes = {}
     for dp in nodes_data:
         desc = dp.get("description")

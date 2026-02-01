@@ -3350,3 +3350,146 @@ def generate_reference_list_from_chunks(
         reference_list.append({"reference_id": str(i + 1), "file_path": file_path})
 
     return reference_list, updated_chunks
+
+def normalize_entity_for_dedup(entity_name: str) -> tuple[str, set[str]]:
+    """Normalize entity name for intelligent deduplication.
+    
+    Handles plural/singular, acronyms, and case variations.
+    Returns normalized form and a set of dedup keys for matching.
+    
+    Args:
+        entity_name: Original entity name
+        
+    Returns:
+        Tuple of (normalized_name, dedup_keys_set) where dedup_keys contain
+        various normalized forms for matching against other entities
+    """
+    import re
+    
+    # Normalize: lowercase, strip whitespace
+    normalized = entity_name.strip().lower()
+    dedup_keys = {normalized}
+    
+    # 1. Handle plural/singular variations
+    # Remove trailing 's' or 'es' for common patterns
+    singular_forms = set()
+    
+    # Common plural -> singular conversions
+    if normalized.endswith("ies"):
+        singular_forms.add(normalized[:-3] + "y")  # e.g., seals -> seal
+    if normalized.endswith("sses"):
+        singular_forms.add(normalized[:-2])  # e.g., glasses -> glass
+    if normalized.endswith("ches") or normalized.endswith("shes"):
+        singular_forms.add(normalized[:-2])  # e.g., matches -> match
+    if normalized.endswith("xes"):
+        singular_forms.add(normalized[:-2])  # e.g., boxes -> box
+    if normalized.endswith("zes"):
+        singular_forms.add(normalized[:-2])  # e.g., buzzes -> buzz
+    if normalized.endswith("oes"):
+        singular_forms.add(normalized[:-2])  # e.g., tomatoes -> tomato
+    if normalized.endswith("s") and not normalized.endswith("ss"):
+        singular_forms.add(normalized[:-1])  # generic: seals -> seal
+    
+    dedup_keys.update(singular_forms)
+    
+    # 2. Handle acronyms and expansions
+    # Split on spaces and hyphens to get components
+    components = re.split(r'[\s\-]+', normalized)
+    
+    # Create acronym from first letters
+    if len(components) > 1:
+        acronym = "".join(c[0] for c in components if c)
+        dedup_keys.add(acronym)
+        
+        # Also add component-only versions for matching
+        # e.g., "dry gas seal" -> also match "dgs"
+        for part in components:
+            dedup_keys.add(part)
+    
+    # 3. Remove common words that vary (the, a, an, of, and)
+    common_words = {"the", "a", "an", "of", "and", "or", "in", "on", "at"}
+    filtered_components = [c for c in components if c not in common_words]
+    if len(filtered_components) != len(components):
+        filtered_form = " ".join(filtered_components)
+        dedup_keys.add(filtered_form)
+    
+    # 4. Remove spaces for exact matching
+    no_space = normalized.replace(" ", "").replace("-", "")
+    dedup_keys.add(no_space)
+    
+    return normalized, dedup_keys
+
+
+def find_duplicate_entity(
+    entity_name: str,
+    entity_candidates: list[str],
+    similarity_threshold: float = 0.8
+) -> tuple[str | None, float]:
+    """Find if entity_name matches any candidates using intelligent deduplication.
+    
+    Args:
+        entity_name: Entity to check for duplicates
+        entity_candidates: List of existing entity names to compare against
+        similarity_threshold: Threshold for fuzzy matching (0.0 to 1.0)
+        
+    Returns:
+        Tuple of (matched_entity_name_or_None, similarity_score)
+    """
+    if not entity_candidates:
+        return None, 0.0
+    
+    # First try exact dedup key matching
+    normalized_query, query_keys = normalize_entity_for_dedup(entity_name)
+    query_words = set(normalized_query.split())
+    
+    best_match = None
+    best_score = 0.0
+    
+    # Phase 1: Exact key matching with smart filtering
+    for candidate in entity_candidates:
+        normalized_candidate, candidate_keys = normalize_entity_for_dedup(candidate)
+        candidate_words = set(normalized_candidate.split())
+        
+        # Check for exact key overlap
+        intersection = query_keys & candidate_keys
+        if intersection:
+            # For multi-word entities, be stricter to avoid false positives
+            if len(query_words) > 1 and len(candidate_words) > 1:
+                # Check if they share significant structural keys, not just single words
+                # Exclude common words like "seal", "component", etc. when they're the only match
+                meaningful_keys = {
+                    k for k in intersection 
+                    if len(k) > 3 and ' ' in k  # Only multi-word keys or long acronyms
+                    or (len(k) > 5)  # Or very specific words
+                }
+                
+                if meaningful_keys:
+                    return candidate, 1.0
+                # Also accept if both queries contain same non-trivial word sequences
+                elif query_words == candidate_words:
+                    return candidate, 1.0
+            else:
+                # For single-word entities, any overlap is good (acronyms, etc.)
+                return candidate, 1.0
+    
+    # If no exact match, try fuzzy matching as fallback
+    try:
+        from difflib import SequenceMatcher
+        
+        for candidate in entity_candidates:
+            normalized_candidate, _ = normalize_entity_for_dedup(candidate)
+            
+            # Calculate similarity ratio
+            ratio = SequenceMatcher(None, normalized_query, normalized_candidate).ratio()
+            
+            if ratio > best_score:
+                best_score = ratio
+                best_match = candidate
+    except ImportError:
+        pass
+    
+    # Return match only if above threshold
+    if best_score >= similarity_threshold:
+        return best_match, best_score
+    
+    return None, best_score
