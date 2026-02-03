@@ -938,6 +938,7 @@ async def acreate_entity(
                 "entity_id": entity_name,
                 "entity_type": entity_data.get("entity_type", "UNKNOWN"),
                 "description": entity_data.get("description", ""),
+                "function": entity_data.get("function", "unknown"),
                 "source_id": entity_data.get("source_id", "manual_creation"),
                 "file_path": entity_data.get("file_path", "manual_creation"),
                 "created_at": int(time.time()),
@@ -963,6 +964,7 @@ async def acreate_entity(
                     "source_id": source_id,
                     "description": description,
                     "entity_type": entity_type,
+                    "function": node_data.get("function", "unknown"),
                     "file_path": entity_data.get("file_path", "manual_creation"),
                 }
             }

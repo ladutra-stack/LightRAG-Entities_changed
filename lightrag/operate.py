@@ -1619,6 +1619,7 @@ async def _merge_nodes_then_upsert(
     already_source_ids = []
     already_description = []
     already_file_paths = []
+    already_functions = []
 
     # 1. Get existing node data from knowledge graph
     already_node = await knowledge_graph_inst.get_node(entity_name)
@@ -1627,6 +1628,8 @@ async def _merge_nodes_then_upsert(
         already_source_ids.extend(already_node["source_id"].split(GRAPH_FIELD_SEP))
         already_file_paths.extend(already_node["file_path"].split(GRAPH_FIELD_SEP))
         already_description.extend(already_node["description"].split(GRAPH_FIELD_SEP))
+        if already_node.get("function"):
+            already_functions.append(already_node["function"])
 
     new_source_ids = [dp["source_id"] for dp in nodes_data if dp.get("source_id")]
 
@@ -1713,6 +1716,17 @@ async def _merge_nodes_then_upsert(
         key=lambda x: x[1],
         reverse=True,
     )[0][0]
+
+    # 6.3 Finalize function by highest count
+    function_list = [dp.get("function", "unknown") for dp in nodes_data if dp.get("function")] + already_functions
+    if function_list:
+        function = sorted(
+            Counter(function_list).items(),
+            key=lambda x: x[1],
+            reverse=True,
+        )[0][0]
+    else:
+        function = "unknown"
 
     # 7. Deduplicate nodes by description and intelligent entity name matching
     # First, try to detect if we're dealing with duplicate entities at the name level
@@ -1866,6 +1880,7 @@ async def _merge_nodes_then_upsert(
         entity_id=entity_name,
         entity_type=entity_type,
         description=description,
+        function=function,
         source_id=source_id,
         file_path=file_path,
         created_at=int(time.time()),
@@ -1883,6 +1898,7 @@ async def _merge_nodes_then_upsert(
             entity_vdb_id: {
                 "entity_name": entity_name,
                 "entity_type": entity_type,
+                "function": function,
                 "content": entity_content,
                 "source_id": source_id,
                 "file_path": file_path,
