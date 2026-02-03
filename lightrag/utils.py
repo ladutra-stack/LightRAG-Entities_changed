@@ -3427,14 +3427,14 @@ def find_duplicate_entity(
     """
     if not entity_candidates:
         return None, 0.0
-    
+
     # First try exact dedup key matching
     normalized_query, query_keys = normalize_entity_for_dedup(entity_name)
     query_words = set(normalized_query.split())
-    
+
     best_match = None
     best_score = 0.0
-    
+
     # Phase 1: Exact key matching with smart filtering
     for candidate in entity_candidates:
         normalized_candidate, candidate_keys = normalize_entity_for_dedup(candidate)
@@ -3448,9 +3448,9 @@ def find_duplicate_entity(
                 # Check if they share significant structural keys, not just single words
                 # Exclude common words like "seal", "component", etc. when they're the only match
                 meaningful_keys = {
-                    k for k in intersection 
-                    if len(k) > 3 and ' ' in k  # Only multi-word keys or long acronyms
-                    or (len(k) > 5)  # Or very specific words
+                    k for k in intersection
+                    if len(k) > 3 and " " in k  # Only multi-word keys or long acronyms
+                    or len(k) > 5  # Or very specific words
                 }
                 
                 if meaningful_keys:
@@ -3470,7 +3470,9 @@ def find_duplicate_entity(
             normalized_candidate, _ = normalize_entity_for_dedup(candidate)
             
             # Calculate similarity ratio
-            ratio = SequenceMatcher(None, normalized_query, normalized_candidate).ratio()
+            ratio = SequenceMatcher(
+                None, normalized_query, normalized_candidate
+            ).ratio()
             
             if ratio > best_score:
                 best_score = ratio
