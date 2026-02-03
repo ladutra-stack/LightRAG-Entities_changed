@@ -3730,6 +3730,14 @@ async def _apply_token_truncation(
 
     # Apply token-based truncation
     if entities_context:
+        # Create mapping of entity names to file_path and created_at for later restoration
+        entity_metadata_map = {}
+        for entity in entities_context:
+            entity_metadata_map[entity["entity"]] = {
+                "file_path": entity.get("file_path"),
+                "created_at": entity.get("created_at"),
+            }
+
         # Remove file_path and created_at for token calculation
         entities_context_for_truncation = []
         for entity in entities_context:
@@ -3747,7 +3755,23 @@ async def _apply_token_truncation(
             tokenizer=tokenizer,
         )
 
+        # Restore file_path and created_at after truncation
+        for entity in entities_context:
+            entity_name = entity["entity"]
+            if entity_name in entity_metadata_map:
+                entity["file_path"] = entity_metadata_map[entity_name]["file_path"]
+                entity["created_at"] = entity_metadata_map[entity_name]["created_at"]
+
     if relations_context:
+        # Create mapping of relation pairs to file_path and created_at for later restoration
+        relation_metadata_map = {}
+        for relation in relations_context:
+            rel_key = (relation["entity1"], relation["entity2"])
+            relation_metadata_map[rel_key] = {
+                "file_path": relation.get("file_path"),
+                "created_at": relation.get("created_at"),
+            }
+
         # Remove file_path and created_at for token calculation
         relations_context_for_truncation = []
         for relation in relations_context:
@@ -3764,6 +3788,13 @@ async def _apply_token_truncation(
             max_token_size=max_relation_tokens,
             tokenizer=tokenizer,
         )
+
+        # Restore file_path and created_at after truncation
+        for relation in relations_context:
+            rel_key = (relation["entity1"], relation["entity2"])
+            if rel_key in relation_metadata_map:
+                relation["file_path"] = relation_metadata_map[rel_key]["file_path"]
+                relation["created_at"] = relation_metadata_map[rel_key]["created_at"]
 
     logger.info(
         f"After truncation: {len(entities_context)} entities, {len(relations_context)} relations"
@@ -4226,11 +4257,44 @@ async def _get_node_data(
 
     results = await entities_vdb.query(query, top_k=query_param.top_k)
 
-    if not len(results):
+    # **NEW: Try to find exact entity match in query**
+    # This handles cases where the query is exactly the entity name (e.g., "Centrifugal Compressor")
+    exact_match_results = []
+    query_normalized = query.strip()
+    
+    try:
+        # Try to find exact match with the query string
+        exact_node_data = await knowledge_graph_inst.get_nodes_batch([query_normalized])
+        if query_normalized in exact_node_data and exact_node_data[query_normalized]:
+            exact_match_results.append({
+                "entity_name": query_normalized,
+                "created_at": exact_node_data[query_normalized].get("created_at"),
+            })
+            logger.info(f"Found exact entity match for query: {query_normalized}")
+    except Exception as e:
+        logger.debug(f"Exact match search failed (expected if entity doesn't exist): {e}")
+
+    # Combine exact match results with vector search results
+    # Place exact matches first for higher priority
+    all_results = exact_match_results + results
+    
+    # Remove duplicates while preserving order
+    seen_entities = set()
+    deduplicated_results = []
+    for r in all_results:
+        entity_name = r["entity_name"]
+        if entity_name not in seen_entities:
+            seen_entities.add(entity_name)
+            deduplicated_results.append(r)
+
+    # Limit to top_k results
+    deduplicated_results = deduplicated_results[:query_param.top_k]
+
+    if not len(deduplicated_results):
         return [], []
 
-    # Extract all entity IDs from your results list
-    node_ids = [r["entity_name"] for r in results]
+    # Extract all entity IDs from deduplicated results
+    node_ids = [r["entity_name"] for r in deduplicated_results]
 
     # Call the batch node retrieval and degree functions concurrently.
     nodes_dict, degrees_dict = await asyncio.gather(
@@ -4252,7 +4316,7 @@ async def _get_node_data(
             "rank": d,
             "created_at": k.get("created_at"),
         }
-        for k, n, d in zip(results, node_datas, node_degrees)
+        for k, n, d in zip(deduplicated_results, node_datas, node_degrees)
         if n is not None
     ]
 
@@ -4266,7 +4330,7 @@ async def _get_node_data(
         f"Local query: {len(node_datas)} entites, {len(use_relations)} relations"
     )
 
-    # Entities are sorted by cosine similarity
+    # Entities are sorted by cosine similarity (with exact matches prioritized)
     # Relations are sorted by rank + weight
     return node_datas, use_relations
 

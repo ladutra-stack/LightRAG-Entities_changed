@@ -3184,17 +3184,12 @@ def convert_to_user_format(
             original_entity = entity_id_to_original[entity_name]
 
         if original_entity:
-            # Use original database data
-            formatted_entities.append(
-                {
-                    "entity_name": original_entity.get("entity_name", entity_name),
-                    "entity_type": original_entity.get("entity_type", "UNKNOWN"),
-                    "description": original_entity.get("description", ""),
-                    "source_id": original_entity.get("source_id", ""),
-                    "file_path": original_entity.get("file_path", "unknown_source"),
-                    "created_at": original_entity.get("created_at", ""),
-                }
-            )
+            # Use original database data - include ALL properties from the original entity
+            formatted_entity = original_entity.copy()
+            # Ensure mandatory fields are present
+            if "entity_name" not in formatted_entity:
+                formatted_entity["entity_name"] = entity_name
+            formatted_entities.append(formatted_entity)
         else:
             # Fallback to LLM context data (for backward compatibility)
             formatted_entities.append(
@@ -3221,19 +3216,14 @@ def convert_to_user_format(
             original_relation = relation_id_to_original[relation_key]
 
         if original_relation:
-            # Use original database data
-            formatted_relationships.append(
-                {
-                    "src_id": original_relation.get("src_id", entity1),
-                    "tgt_id": original_relation.get("tgt_id", entity2),
-                    "description": original_relation.get("description", ""),
-                    "keywords": original_relation.get("keywords", ""),
-                    "weight": original_relation.get("weight", 1.0),
-                    "source_id": original_relation.get("source_id", ""),
-                    "file_path": original_relation.get("file_path", "unknown_source"),
-                    "created_at": original_relation.get("created_at", ""),
-                }
-            )
+            # Use original database data - include ALL properties from the original relation
+            formatted_relation = original_relation.copy()
+            # Ensure mandatory fields are present
+            if "src_id" not in formatted_relation:
+                formatted_relation["src_id"] = entity1
+            if "tgt_id" not in formatted_relation:
+                formatted_relation["tgt_id"] = entity2
+            formatted_relationships.append(formatted_relation)
         else:
             # Fallback to LLM context data (for backward compatibility)
             formatted_relationships.append(
