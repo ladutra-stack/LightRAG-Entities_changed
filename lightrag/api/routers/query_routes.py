@@ -200,7 +200,7 @@ class FilterDataRequest(BaseModel):
 
     filter_config: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="Entity filter configuration. Supports: entity_type (list), entity_name (list), has_property (list)",
+        description="Entity filter configuration. Supports: entity_id (list - PRIMARY), entity_name (list), entity_type (list), has_property (list)",
     )
 
     top_k: Optional[int] = Field(
@@ -1361,8 +1361,14 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         """
         Apply filters to entities based on filter_config.
 
+        Filter priority (highest to lowest):
+        1. entity_id - Direct ID matching (fastest, most precise)
+        2. entity_name - Exact name matching
+        3. entity_type - Type classification
+        4. has_property - Property presence check
+
         Filter logic:
-        - Within same key: OR logic (if entity_type matches ANY value, include it)
+        - Within same key: OR logic (if entity matches ANY value, include it)
         - Between keys: AND logic (entity must match ALL provided filter keys)
         """
         if not filter_config:
@@ -1370,20 +1376,29 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
         filtered = entities
 
+        # PRIMARY FILTER: Filter by entity_id (highest priority)
+        if "entity_id" in filter_config:
+            allowed_ids = filter_config["entity_id"]
+            filtered = [
+                e for e in filtered
+                if e.get("entity_id") in allowed_ids
+                or e.get("id") in allowed_ids  # Some systems may use "id" instead
+            ]
+
+        # SECONDARY FILTER: Filter by entity_name
+        if "entity_name" in filter_config:
+            allowed_names = filter_config["entity_name"]
+            filtered = [
+                e for e in filtered
+                if e.get("entity_name", "").lower() in [n.lower() for n in allowed_names]
+            ]
+
         # Filter by entity_type
         if "entity_type" in filter_config:
             allowed_types = filter_config["entity_type"]
             filtered = [
                 e for e in filtered
                 if e.get("entity_type", "").lower() in [t.lower() for t in allowed_types]
-            ]
-
-        # Filter by entity_name
-        if "entity_name" in filter_config:
-            allowed_names = filter_config["entity_name"]
-            filtered = [
-                e for e in filtered
-                if e.get("entity_name", "").lower() in [n.lower() for n in allowed_names]
             ]
 
         # Filter by has_property (must have the property with non-empty value)

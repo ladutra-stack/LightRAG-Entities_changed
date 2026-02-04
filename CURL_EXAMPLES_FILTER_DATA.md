@@ -25,11 +25,18 @@ POST http://localhost:9621/query/filter_data
 
 ```json
 {
-  "entity_type": ["component", "equipment", "system", "manufacturer"],
+  "entity_id": ["ent-abc123", "ent-def456"],
   "entity_name": ["Bearing", "Pump", "Compressor"],
+  "entity_type": ["component", "equipment", "system", "manufacturer"],
   "has_property": ["function", "description"]
 }
 ```
+
+**Prioridade de Filtros (do mais rápido para o mais lento):**
+1. **entity_id** (PRIMARY) - Busca direta por ID, mais rápida e precisa
+2. **entity_name** - Busca por nome exato (case-insensitive)
+3. **entity_type** - Filtro por tipo de entidade
+4. **has_property** - Verifica se propriedade existe e não está vazia
 
 **Lógica de Filtros:**
 - **Dentro da mesma chave:** lógica **OR** (se a entidade corresponde a QUALQUER valor, inclua)
@@ -40,7 +47,18 @@ POST http://localhost:9621/query/filter_data
 ## ⚡ Quick Test (Teste Rápido)
 
 ```bash
-# Teste simples - filtrar por tipo de entidade
+# Teste 1: Filtrar por entity_id (RECOMENDADO - mais rápido!)
+curl -X POST http://localhost:9621/query/filter_data \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "",
+    "filter_config": {
+      "entity_id": ["ent-abc123", "ent-def456"]
+    },
+    "top_k": 5
+  }'
+
+# Teste 2: Filtrar por tipo de entidade
 curl -X POST http://localhost:9621/query/filter_data \
   -H "Content-Type: application/json" \
   -d '{
@@ -51,13 +69,13 @@ curl -X POST http://localhost:9621/query/filter_data \
     "top_k": 5
   }'
 
-# Com busca semântica dentro do filtro
+# Teste 3: Combinação - entity_id + busca semântica
 curl -X POST http://localhost:9621/query/filter_data \
   -H "Content-Type: application/json" \
   -d '{
     "query": "compression pressure",
     "filter_config": {
-      "entity_type": ["equipment"]
+      "entity_id": ["ent-abc123", "ent-def456"]
     },
     "top_k": 5
   }'
@@ -65,7 +83,51 @@ curl -X POST http://localhost:9621/query/filter_data \
 
 ---
 
-## 🎯 Exemplo 1: Filtro Simples por Tipo de Entidade
+## 🎯 Exemplo 1: Filtro por entity_id (PRIMARY - RECOMENDADO)
+
+Recuperar entidades específicas por seu ID (mais rápido e preciso).
+
+```bash
+curl -X POST http://localhost:9621/query/filter_data \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "",
+    "filter_config": {
+      "entity_id": ["ent-abc123", "ent-def456"]
+    },
+    "top_k": 10,
+    "mode": "local"
+  }'
+```
+
+**Vantagens:**
+- ✅ Busca **direta** por ID (mais rápido)
+- ✅ **Preciso** - evita ambiguidades de nomes
+- ✅ Ideal para integração com sistemas externos
+- ✅ Sem variações de case ou espaço
+
+**Response:**
+```json
+{
+  "status": "success",
+  "message": "Retrieved 2 filtered entities",
+  "data": {
+    "entities": [
+      {
+        "entity_id": "ent-abc123",
+        "entity_name": "Centrifugal Compressor",
+        "entity_type": "equipment",
+        "description": "Main compression equipment...",
+        "function": "compress gas"
+      }
+    ]
+  }
+}
+```
+
+---
+
+## 🎯 Exemplo 2: Filtro por Tipo de Entidade
 
 Recuperar chunks apenas de componentes.
 
