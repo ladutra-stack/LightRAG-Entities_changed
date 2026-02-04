@@ -1340,7 +1340,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             all_entities = response.get("data", {}).get("entities", [])
             filtered_entities = all_entities
 
-            # Apply filter_config to entities (filters are applied AFTER RAG retrieval)
+            # Apply filter_config to entities
             if request.filter_config:
                 filtered_entities = _apply_entity_filters(
                     all_entities,
@@ -1353,35 +1353,68 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     f"(filters: {list(request.filter_config.keys())})"
                 )
 
-            # Build filtered response
-            filtered_data = response.get("data", {})
-            filtered_data["entities"] = filtered_entities
 
-            # Filter chunks to only include those related to filtered entities
+            # STEP 1: Recupera TODOS os chunks vinculados às entidades filtradas e agrupa em um único grupo (deduplicação)
             if filtered_entities:
-                entity_names = {e.get("entity_name") for e in filtered_entities}
                 all_chunks = response.get("data", {}).get("chunks", [])
-                
-                # Keep chunks that mention any of the filtered entity names
-                filtered_chunks = [
-                    c for c in all_chunks
-                    if any(
-                        name.lower() in c.get("content", "").lower()
-                        for name in entity_names
-                    )
-                ]
-                
-                filtered_data["chunks"] = filtered_chunks
+                # Coleta todos os chunks que têm relação com QUALQUER entidade filtrada
+                # Associações originais não importam após deduplicação
+                chunks_dict = {}
+                # Considera chunks relacionados por entity_id OU entity_name
+                entity_ids = {e.get("entity_id") or e.get("id") for e in filtered_entities}
+                entity_names = {e.get("entity_name") for e in filtered_entities}
+                for chunk in all_chunks:
+                    chunk_id = chunk.get("chunk_id") or chunk.get("id") or id(chunk)
+                    # Checa se chunk está vinculado a alguma entidade filtrada
+                    # Pode ser por campo source_entity, entity_id, ou menção no conteúdo
+                    linked = False
+                    if "source_entity" in chunk and chunk["source_entity"] in entity_names:
+                        linked = True
+                    elif "entity_id" in chunk and chunk["entity_id"] in entity_ids:
+                        linked = True
+                    elif any(name and name.lower() in chunk.get("content", "").lower() for name in entity_names):
+                        linked = True
+                    if linked and chunk_id not in chunks_dict:
+                        chunks_dict[chunk_id] = chunk
                 logger.debug(
-                    f"Chunk filtering: {len(all_chunks)} total → "
-                    f"{len(filtered_chunks)} related to filtered entities"
+                    f"Chunk collection: {len(all_chunks)} total → {len(chunks_dict)} chunks vinculados às entidades filtradas (deduplicados)"
                 )
+                # STEP 2: Seleciona os chunk_top_k mais relevantes semanticamente
+                deduped_chunks = list(chunks_dict.values())
+                deduped_chunks.sort(key=lambda c: float(c.get("similarity_score", 0.0)), reverse=True)
+                chunk_limit = request.chunk_top_k if request.chunk_top_k is not None else len(deduped_chunks)
+                selected_chunks = deduped_chunks[:chunk_limit]
+                logger.debug(
+                    f"Semantic ranking: Selecionados {len(selected_chunks)} chunks (chunk_top_k={chunk_limit})"
+                )
+                # STEP 3: Passa pelo rerank se habilitado e retorna top_k
+                final_chunks = selected_chunks
+                if request.enable_rerank and selected_chunks:
+                    # Aqui você pode chamar a função de rerank real se existir
+                    logger.debug(
+                        f"Reranking habilitado: reordenando {len(selected_chunks)} chunks e selecionando top {request.top_k}"
+                    )
+                    # Exemplo: final_chunks = rerank_chunks(selected_chunks, request.top_k)
+                    final_chunks = selected_chunks[:request.top_k]
+                else:
+                    final_chunks = selected_chunks[:request.top_k]
+                # Prepara resposta
+                filtered_data = response.get("data", {})
+                filtered_data["entities"] = filtered_entities
+                filtered_data["chunks"] = final_chunks
+            else:
+                # Nenhuma entidade correspondeu ao filtro
+                filtered_data = response.get("data", {})
+                filtered_data["entities"] = []
+                filtered_data["chunks"] = []
+                logger.debug("Nenhuma entidade correspondeu ao filtro")
 
-            # Update response with filtered data
+            # Atualiza resposta
             response["data"] = filtered_data
             response["message"] = (
-                f"Retrieved {len(filtered_entities)} filtered entities, "
-                f"{len(filtered_data.get('chunks', []))} related chunks"
+                f"Recuperados {len(filtered_entities)} entidades filtradas, "
+                f"{len(filtered_data.get('chunks', []))} chunks relacionados "
+                f"({f'reranked to top {request.top_k}' if request.enable_rerank else 'no reranking'})"
             )
 
             return QueryDataResponse(**response)

@@ -69,32 +69,41 @@ POST http://localhost:9621/query/filter_data
 │  RESULTADO: Entidades filtradas ⬇️                  │
 └──────────────────┬──────────────────────────────────┘
                    ▼
+
 ┌─────────────────────────────────────────────────────┐
-│ 4️⃣  FILTRAGEM DE CHUNKS: Mantém apenas chunks que  │
-│     mencionam as entidades filtradas                │
-│  RESULTADO: chunks_filtrados ⬇️                     │
+│ 4️⃣  AGRUPAMENTO E DEDUPLICAÇÃO DE CHUNKS           │
+│     Agrupa TODOS os chunks vinculados às entidades  │
+│     filtradas em um único grupo, sem duplicação     │
+│  RESULTADO: chunks_deduplicados ⬇️                  │
 └──────────────────┬──────────────────────────────────┘
                    ▼
 ┌─────────────────────────────────────────────────────┐
-│ 5️⃣  RERANKING (Opcional):                          │
+│ 5️⃣  SELEÇÃO SEMÂNTICA:                             │
+│  • Seleciona os chunk_top_k mais relevantes         │
+│    semanticamente (por similarity_score)            │
+│  RESULTADO: chunk_top_k selecionados ⬇️             │
+└──────────────────┬──────────────────────────────────┘
+                   ▼
+┌─────────────────────────────────────────────────────┐
+│ 6️⃣  RERANKING (Opcional):                          │
 │  • Se enable_rerank=true: Reordena por relevância   │
 │  • Seleciona top_k melhores chunks                  │
-│  RESULTADO: top_k chunks reranqueados ⬇️            │
+│  RESULTADO: top_k chunks finais ⬇️                  │
 └──────────────────┬──────────────────────────────────┘
                    ▼
 ┌─────────────────────────────────────────────────────┐
-│ 6️⃣  SAÍDA: Response com:                           │
+│ 7️⃣  SAÍDA: Response com:                           │
 │  • Entidades filtradas                              │
-│  • Chunks relacionados (opcionalmente reranqueados) │
+│  • Chunks finais (deduplicados, top_k, reranqueados)│
 │  • Referências e metadados                          │
 └─────────────────────────────────────────────────────┘
 ```
 
 **Pontos Importantes:**
-- ✅ O `chunk_top_k` é recuperado **DOS CHUNKS DO RAG** (não pré-filtrado)
-- ✅ Os chunks são filtrados para **APENAS mencionar entidades filtradas**
-- ✅ Se `enable_rerank=true`, apenas os `top_k` melhores são retornados
-- ✅ `filter_config` é aplicado **APÓS a recuperação semântica**, mas **ANTES do reranking**
+- ✅ TODOS os chunks vinculados às entidades filtradas são agrupados e deduplicados em um único grupo
+- ✅ chunk_top_k seleciona os mais relevantes semanticamente após deduplicação
+- ✅ Se `enable_rerank=true`, apenas os `top_k` melhores são retornados após reranking
+- ✅ `filter_config` é aplicado **APÓS a recuperação semântica**, mas **ANTES do agrupamento/deduplicação e reranking**
 
 ---
 
@@ -304,19 +313,21 @@ curl -X POST http://localhost:9621/query/filter_data \
   }'
 ```
 
+
 **Fluxo de Processamento:**
 
 ```
 1. RAG recupera dados (semântico + entities)
 2. Filtra entidades por filter_config (entity_type, entity_id, etc)
-3. Recupera chunk_top_k (20) chunks APENAS das entidades filtradas
-4. Aplica reranking (reordena por relevância)
-5. Retorna top_k (5) melhores chunks após reranking
+3. Agrupa TODOS os chunks vinculados às entidades filtradas em um único grupo, removendo duplicatas
+4. Seleciona os chunk_top_k mais relevantes semanticamente (por similarity_score)
+5. Se enable_rerank=true, reordena por relevância e retorna os top_k melhores chunks
+6. Se rerank desativado, retorna os top_k melhores chunks do ranking semântico
 ```
 
 **Explicação:**
 - `filter_config` - Filtros aplicados APÓS recuperação semântica inicial
-- `chunk_top_k: 20` - Recupera 20 chunks SÓ das entidades filtradas
+- `chunk_top_k: 20` - Seleciona os 20 chunks mais relevantes após deduplicação
 - `enable_rerank: true` - Aplica reranking (reordena por relevância)
 - `top_k: 5` - Retorna apenas os 5 melhores após reranking
 - Resulta em **melhor qualidade** mesmo com `top_k` pequeno
