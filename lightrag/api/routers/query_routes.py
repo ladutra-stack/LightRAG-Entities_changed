@@ -1336,24 +1336,33 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     data={},
                 )
 
-            # Extract and filter entities based on filter_config
+            # Extract entities from response
             all_entities = response.get("data", {}).get("entities", [])
             filtered_entities = all_entities
 
+            # Apply filter_config to entities (filters are applied AFTER RAG retrieval)
             if request.filter_config:
                 filtered_entities = _apply_entity_filters(
                     all_entities,
                     request.filter_config
+                )
+                
+                logger.debug(
+                    f"Entity filtering: {len(all_entities)} total → "
+                    f"{len(filtered_entities)} filtered "
+                    f"(filters: {list(request.filter_config.keys())})"
                 )
 
             # Build filtered response
             filtered_data = response.get("data", {})
             filtered_data["entities"] = filtered_entities
 
-            # Only keep chunks that relate to filtered entities
+            # Filter chunks to only include those related to filtered entities
             if filtered_entities:
                 entity_names = {e.get("entity_name") for e in filtered_entities}
                 all_chunks = response.get("data", {}).get("chunks", [])
+                
+                # Keep chunks that mention any of the filtered entity names
                 filtered_chunks = [
                     c for c in all_chunks
                     if any(
@@ -1361,11 +1370,19 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                         for name in entity_names
                     )
                 ]
+                
                 filtered_data["chunks"] = filtered_chunks
+                logger.debug(
+                    f"Chunk filtering: {len(all_chunks)} total → "
+                    f"{len(filtered_chunks)} related to filtered entities"
+                )
 
             # Update response with filtered data
             response["data"] = filtered_data
-            response["message"] = f"Retrieved {len(filtered_entities)} filtered entities"
+            response["message"] = (
+                f"Retrieved {len(filtered_entities)} filtered entities, "
+                f"{len(filtered_data.get('chunks', []))} related chunks"
+            )
 
             return QueryDataResponse(**response)
 

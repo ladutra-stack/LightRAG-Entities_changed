@@ -46,6 +46,58 @@ POST http://localhost:9621/query/filter_data
 
 ---
 
+## 🔄 Fluxo de Processamento do `/query/filter_data`
+
+```
+┌─────────────────────────────────────────────────────┐
+│ 1️⃣  ENTRADA: Request com query + filter_config     │
+└──────────────────┬──────────────────────────────────┘
+                   ▼
+┌─────────────────────────────────────────────────────┐
+│ 2️⃣  RAG SEMÂNTICO: Recupera dados gerais           │
+│  • Entidades: Todas as entidades relevantes         │
+│  • Chunks: chunk_top_k chunks (default: N)          │
+│  • Relacionamentos: Connections graph               │
+└──────────────────┬──────────────────────────────────┘
+                   ▼
+┌─────────────────────────────────────────────────────┐
+│ 3️⃣  FILTRAGEM DE ENTIDADES: Aplica filter_config   │
+│  • entity_id: Busca direta (se fornecido)           │
+│  • entity_type: Filtra por tipo                     │
+│  • entity_name: Filtra por nome                     │
+│  • has_property: Verifica propriedades              │
+│  RESULTADO: Entidades filtradas ⬇️                  │
+└──────────────────┬──────────────────────────────────┘
+                   ▼
+┌─────────────────────────────────────────────────────┐
+│ 4️⃣  FILTRAGEM DE CHUNKS: Mantém apenas chunks que  │
+│     mencionam as entidades filtradas                │
+│  RESULTADO: chunks_filtrados ⬇️                     │
+└──────────────────┬──────────────────────────────────┘
+                   ▼
+┌─────────────────────────────────────────────────────┐
+│ 5️⃣  RERANKING (Opcional):                          │
+│  • Se enable_rerank=true: Reordena por relevância   │
+│  • Seleciona top_k melhores chunks                  │
+│  RESULTADO: top_k chunks reranqueados ⬇️            │
+└──────────────────┬──────────────────────────────────┘
+                   ▼
+┌─────────────────────────────────────────────────────┐
+│ 6️⃣  SAÍDA: Response com:                           │
+│  • Entidades filtradas                              │
+│  • Chunks relacionados (opcionalmente reranqueados) │
+│  • Referências e metadados                          │
+└─────────────────────────────────────────────────────┘
+```
+
+**Pontos Importantes:**
+- ✅ O `chunk_top_k` é recuperado **DOS CHUNKS DO RAG** (não pré-filtrado)
+- ✅ Os chunks são filtrados para **APENAS mencionar entidades filtradas**
+- ✅ Se `enable_rerank=true`, apenas os `top_k` melhores são retornados
+- ✅ `filter_config` é aplicado **APÓS a recuperação semântica**, mas **ANTES do reranking**
+
+---
+
 ## ⚡ Quick Test (Teste Rápido)
 
 ```bash
@@ -252,19 +304,38 @@ curl -X POST http://localhost:9621/query/filter_data \
   }'
 ```
 
+**Fluxo de Processamento:**
+
+```
+1. RAG recupera dados (semântico + entities)
+2. Filtra entidades por filter_config (entity_type, entity_id, etc)
+3. Recupera chunk_top_k (20) chunks APENAS das entidades filtradas
+4. Aplica reranking (reordena por relevância)
+5. Retorna top_k (5) melhores chunks após reranking
+```
+
 **Explicação:**
-- `chunk_top_k: 20` - Recupera 20 chunks inicialmente
+- `filter_config` - Filtros aplicados APÓS recuperação semântica inicial
+- `chunk_top_k: 20` - Recupera 20 chunks SÓ das entidades filtradas
 - `enable_rerank: true` - Aplica reranking (reordena por relevância)
-- Apenas os 5 melhores (`top_k`) são retornados após reranking
+- `top_k: 5` - Retorna apenas os 5 melhores após reranking
 - Resulta em **melhor qualidade** mesmo com `top_k` pequeno
 
 **Response:**
 ```json
 {
   "status": "success",
-  "message": "Retrieved 5 filtered entities",
+  "message": "Retrieved 5 filtered entities, 20 related chunks",
   "data": {
-    "entities": [...],
+    "entities": [
+      {
+        "entity_id": "ent-xyz",
+        "entity_name": "Centrifugal Compressor",
+        "entity_type": "equipment",
+        "description": "Main compression equipment...",
+        "function": "compress gas"
+      }
+    ],
     "chunks": [
       {
         "content": "The centrifugal compressor uses pressure control...",
@@ -281,7 +352,9 @@ curl -X POST http://localhost:9621/query/filter_data \
   "metadata": {
     "reranking_applied": true,
     "chunks_before_rerank": 20,
-    "chunks_after_rerank": 5
+    "chunks_after_rerank": 5,
+    "entities_found": 5,
+    "entities_filtered": 1
   }
 }
 ```
