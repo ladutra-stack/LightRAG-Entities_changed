@@ -42,6 +42,10 @@ from lightrag.utils import (
     normalize_entity_for_dedup,
     find_duplicate_entity,
 )
+from lightrag.utils_equipment_filter import (
+    is_valid_equipment_entity,
+    deduplicate_entities_advanced,
+)
 from lightrag.base import (
     BaseGraphStorage,
     BaseKVStorage,
@@ -437,6 +441,18 @@ async def _handle_single_entity_extraction(
                 f"Entity extraction warning: empty function for entity '{entity_name}' of type '{entity_type}'"
             )
             entity_function = "unknown"  # Set default value instead of rejecting
+
+        # VALIDATION: Check if entity is valid equipment entity (MUDANÇA 2)
+        is_valid, validation_reason = is_valid_equipment_entity(
+            entity_name=entity_name,
+            entity_type=entity_type,
+            entity_function=entity_function,
+            filter_config=None
+        )
+        
+        if not is_valid:
+            logger.debug(f"Entity validation failed for '{entity_name}': {validation_reason}")
+            return None  # Reject invalid entities
 
         return dict(
             entity_name=entity_name,
@@ -2505,6 +2521,24 @@ async def merge_nodes_and_edges(
         for edge_key, edges in maybe_edges.items():
             sorted_edge_key = tuple(sorted(edge_key))
             all_edges[sorted_edge_key].extend(edges)
+
+    # ===== MUDANÇA 3: Apply advanced deduplication before processing =====
+    # Convert all_nodes to flat list of entity dicts for deduplication
+    all_entities_list = []
+    for entity_name, entities_list in all_nodes.items():
+        for entity_dict in entities_list:
+            all_entities_list.append(entity_dict)
+    
+    # Apply advanced deduplication (6 strategies)
+    deduplicated_entities = deduplicate_entities_advanced(all_entities_list)
+    logger.info(f"Deduplication: {len(all_entities_list)} entities → {len(deduplicated_entities)} entities")
+    
+    # Rebuild all_nodes from deduplicated entities
+    all_nodes = defaultdict(list)
+    for entity_dict in deduplicated_entities:
+        entity_name = entity_dict.get("entity_name", "")
+        if entity_name:
+            all_nodes[entity_name].append(entity_dict)
 
     total_entities_count = len(all_nodes)
     total_relations_count = len(all_edges)

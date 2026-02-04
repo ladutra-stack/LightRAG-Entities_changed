@@ -11,16 +11,30 @@ PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|#|>"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
 PROMPTS["entity_extraction_system_prompt"] = """---Role---
-You are a Knowledge Graph Specialist responsible for extracting entities and relationships from the input text.
+You are a Knowledge Graph Specialist responsible for extracting entities and relationships from INDUSTRIAL EQUIPMENT SYSTEMS.
+
+---CRITICAL FILTERING RULES FOR INDUSTRIAL ENTITIES---
+**DO NOT EXTRACT:**
+1. Part Numbers and Model Codes: "3051CD1A73A1KB4K2L4MSQ4CNP1DFQT", "111TE", "116NGV" (pure numeric/alphanumeric codes)
+2. Tiny Parts (<5cm): "O-Ring", "Nut", "Screw", "Gasket", "Bolt", "Washer" (consumables/fasteners)
+3. Consumables: "Seal oil", "Lubricant", "Paint", "Grease", "Coolant" (non-equipment)
+
+**EXTRACT ONLY:**
+1. EQUIPMENT (major assemblies): "Centrifugal Compressor", "Gas Turbine", "Electric Motor" ✓
+2. SYSTEMS: "Lubricating Oil System", "Anti-Surge Control System", "Cooling Water System" ✓
+3. COMPONENTS (>2cm, replaceable, primary functions): "Compressor Rotor", "Rotor Blade", "Impeller" ✓
+4. MANUFACTURERS/BRANDS: "Baker Hughes", "GE", "Siemens", "Woodward" ✓ (valid as entity relationships)
+5. MODELS (named product lines): "LM2500 PLUS G4", "V94.2" ✓
+6. PROCESSES/FUNCTIONS: "Anti-Surge Control", "Gas Compression", "Vibration Damping" ✓
 
 ---Instructions---
 1.  **Entity Extraction & Output:**
-    *   **Identification:** Identify clearly defined and meaningful entities in the input text.
+    *   **Identification:** Identify clearly defined and meaningful entities in INDUSTRIAL EQUIPMENT contexts. Apply filtering rules above BEFORE extraction.
     *   **Entity Details:** For each identified entity, extract the following information:
         *   `entity_name`: The name of the entity. If the entity name is case-insensitive, capitalize the first letter of each significant word (title case). Ensure **consistent naming** across the entire extraction process.
         *   `entity_type`: Categorize the entity using one of the following types: `{entity_types}`. If none of the provided entity types apply, do not add new entity type and classify it as `Other`.
         *   `entity_description`: Provide a concise yet comprehensive description of the entity's attributes and activities, based *solely* on the information present in the input text.
-        *   `entity_function`: Describe the primary function or role of the entity using the format: **infinitive verb + object**. Use base verb form (not conjugated or gerund), keep it SHORT (2-4 words), and focus on the PRIMARY function only. Do NOT use articles (a, an, the) or pronouns. Examples: "compress gas", "pump oil", "seal leakage", "store data", "route requests". Base this SOLELY on information present in the input text.
+        *   `entity_function`: Describe the primary function or role of the entity using the format: **infinitive verb + object**. Use base verb form (not conjugated or gerund), keep it SHORT (2-4 words), and focus on the PRIMARY function only. Do NOT use articles (a, an, the) or pronouns. Examples for valid machine functions: "compress gas", "pump oil", "seal leakage", "store data", "control pressure", "dampen vibration". AVOID administrative functions like "manage inventory", "track data", "approve requests". Base this SOLELY on information present in the input text.
     *   **Output Format - Entities:** Output a total of 5 fields for each entity, delimited by `{tuple_delimiter}`, on a single line. The first field *must* be the literal string `entity`.
         *   Format: `entity{tuple_delimiter}entity_name{tuple_delimiter}entity_type{tuple_delimiter}entity_description{tuple_delimiter}entity_function`
 
