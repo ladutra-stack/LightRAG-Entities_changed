@@ -1735,7 +1735,7 @@ async def _merge_nodes_then_upsert(
         entity_names = [dp.get("entity_name", entity_name) for dp in nodes_data]
         # Check if any names appear to be duplicates (plural, singular, acronyms, etc.)
         duplicate_entity_name, dup_score = find_duplicate_entity(
-            entity_name, 
+            entity_name,
             entity_names,
             similarity_threshold=0.8
         )
@@ -1744,7 +1744,7 @@ async def _merge_nodes_then_upsert(
                 f"Entity dedup: Found potential duplicate entity names - "
                 f"'{entity_name}' vs '{duplicate_entity_name}' (similarity: {dup_score:.2f})"
             )
-    
+
     # Deduplicate nodes by description, keeping first occurrence in the same document
     unique_nodes = {}
     for dp in nodes_data:
@@ -4257,27 +4257,34 @@ async def _get_node_data(
 
     results = await entities_vdb.query(query, top_k=query_param.top_k)
 
-    # **NEW: Try to find exact entity match in query**
-    # This handles cases where the query is exactly the entity name (e.g., "Centrifugal Compressor")
+    # **NEW: Try to find exact entity matches in query**
+    # This handles cases where the query contains entity names (e.g., "Centrifugal Compressor")
+    # The query parameter may contain multiple keywords separated by commas
     exact_match_results = []
-    query_normalized = query.strip()
-    
-    try:
-        # Try to find exact match with the query string
-        exact_node_data = await knowledge_graph_inst.get_nodes_batch([query_normalized])
-        if query_normalized in exact_node_data and exact_node_data[query_normalized]:
-            exact_match_results.append({
-                "entity_name": query_normalized,
-                "created_at": exact_node_data[query_normalized].get("created_at"),
-            })
-            logger.info(f"Found exact entity match for query: {query_normalized}")
-    except Exception as e:
-        logger.debug(f"Exact match search failed (expected if entity doesn't exist): {e}")
+
+    # Split query into individual keywords and try exact match for each
+    query_keywords = [k.strip() for k in query.split(",") if k.strip()]
+
+    if query_keywords:
+        try:
+            # Try to find exact matches for all keywords
+            exact_node_data = await knowledge_graph_inst.get_nodes_batch(query_keywords)
+
+            # Collect results in order of keywords (preserve priority)
+            for keyword in query_keywords:
+                if keyword in exact_node_data and exact_node_data[keyword]:
+                    exact_match_results.append({
+                        "entity_name": keyword,
+                        "created_at": exact_node_data[keyword].get("created_at"),
+                    })
+                    logger.info(f"Found exact entity match for keyword: {keyword}")
+        except Exception as e:
+            logger.debug(f"Exact match search failed (expected if entity doesn't exist): {e}")
 
     # Combine exact match results with vector search results
     # Place exact matches first for higher priority
     all_results = exact_match_results + results
-    
+
     # Remove duplicates while preserving order
     seen_entities = set()
     deduplicated_results = []
@@ -4416,14 +4423,31 @@ async def _find_related_text_unit_from_entities(
     # Step 1: Collect all text chunks for each entity
     entities_with_chunks = []
     for entity in node_datas:
-        if entity.get("source_id"):
+        source_id = entity.get("source_id")
+        entity_name = entity.get("entity_name", "")
+
+        # Fallback: if source_id is missing from the node, try to get it from entity_chunks_storage
+        if not source_id and entity_name and text_chunks_db and hasattr(text_chunks_db, 'global_config'):
+            try:
+                entity_chunks_storage = text_chunks_db.global_config.get("entity_chunks")
+                if entity_chunks_storage:
+                    stored_chunks = await entity_chunks_storage.get_by_id(entity_name)
+                    if stored_chunks and isinstance(stored_chunks, dict):
+                        chunk_ids = stored_chunks.get("chunk_ids", [])
+                        if chunk_ids:
+                            source_id = GRAPH_FIELD_SEP.join(chunk_ids)
+                            logger.debug(f"Retrieved source_id for '{entity_name}' from entity_chunks_storage: {len(chunk_ids)} chunks")
+            except Exception as e:
+                logger.debug(f"Failed to retrieve source_id from entity_chunks_storage for '{entity_name}': {e}")
+
+        if source_id:
             chunks = split_string_by_multi_markers(
-                entity["source_id"], [GRAPH_FIELD_SEP]
+                source_id, [GRAPH_FIELD_SEP]
             )
             if chunks:
                 entities_with_chunks.append(
                     {
-                        "entity_name": entity["entity_name"],
+                        "entity_name": entity_name,
                         "chunks": chunks,
                         "entity_data": entity,
                     }
@@ -4664,9 +4688,28 @@ async def _find_related_text_unit_from_relations(
     # Step 1: Collect all text chunks for each relationship
     relations_with_chunks = []
     for relation in edge_datas:
-        if relation.get("source_id"):
+        source_id = relation.get("source_id")
+        src_id = relation.get("src_id", "")
+        tgt_id = relation.get("tgt_id", "")
+
+        # Fallback: if source_id is missing from the relation, try to get it from relation_chunks_storage
+        if not source_id and src_id and tgt_id and text_chunks_db and hasattr(text_chunks_db, 'global_config'):
+            try:
+                relation_chunks_storage = text_chunks_db.global_config.get("relation_chunks")
+                if relation_chunks_storage:
+                    relation_key = make_relation_chunk_key(src_id, tgt_id)
+                    stored_chunks = await relation_chunks_storage.get_by_id(relation_key)
+                    if stored_chunks and isinstance(stored_chunks, dict):
+                        chunk_ids = stored_chunks.get("chunk_ids", [])
+                        if chunk_ids:
+                            source_id = GRAPH_FIELD_SEP.join(chunk_ids)
+                            logger.debug(f"Retrieved source_id for relation '{src_id}'-'{tgt_id}' from relation_chunks_storage: {len(chunk_ids)} chunks")
+            except Exception as e:
+                logger.debug(f"Failed to retrieve source_id from relation_chunks_storage for '{src_id}'-'{tgt_id}': {e}")
+
+        if source_id:
             chunks = split_string_by_multi_markers(
-                relation["source_id"], [GRAPH_FIELD_SEP]
+                source_id, [GRAPH_FIELD_SEP]
             )
             if chunks:
                 # Build relation identifier
