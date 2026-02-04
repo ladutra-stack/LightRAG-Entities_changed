@@ -2712,6 +2712,655 @@ class LightRAG:
         await self._query_done()
         return final_data
 
+    async def aquery_by_entities(
+        self,
+        entity_names: list[str],
+        query: str,
+        param: QueryParam = QueryParam(),
+    ) -> dict[str, Any]:
+        """
+        Query by filtering chunks from specific entities using semantic search.
+
+        This method implements entity-filtered retrieval:
+        1. Filter chunks that belong to the specified entities
+        2. Apply semantic search to those chunks
+        3. Optionally apply reranking
+        4. Return top k chunks sorted by similarity
+
+        Args:
+            entity_names: List of entity names to filter by
+            query: Query string for semantic search
+            param: QueryParam with configuration (top_k, chunk_top_k, enable_rerank, etc)
+
+        Returns:
+            dict[str, Any]: Structured result containing:
+                {
+                    "status": "success" | "error",
+                    "message": str,
+                    "chunks": [
+                        {
+                            "chunk_id": str,
+                            "content": str,
+                            "file_path": str,
+                            "similarity_score": float,
+                            "rank": int,
+                        },
+                        ...
+                    ],
+                    "metadata": {
+                        "entities_requested": List[str],
+                        "entities_found": int,
+                        "total_chunks_found": int,
+                        "chunks_returned": int,
+                        "reranking_applied": bool,
+                    }
+                }
+        """
+        from lightrag.utils import logger
+        import math
+
+        try:
+            logger.info(
+                f"Entity-filtered retrieval: {len(entity_names)} entities, query: '{query[:100]}'"
+            )
+
+            # ============ STEP 1: Collect chunk IDs from entities ============
+            chunk_ids_by_entity = {}
+            all_chunk_ids = set()
+
+            for entity_name in entity_names:
+                entity_chunks_data = await self.entity_chunks.get_by_id(
+                    entity_name
+                )
+                if entity_chunks_data and isinstance(entity_chunks_data, dict):
+                    chunk_ids = entity_chunks_data.get("chunk_ids", [])
+                    chunk_ids_by_entity[entity_name] = chunk_ids
+                    all_chunk_ids.update(chunk_ids)
+                    logger.debug(
+                        f"Entity '{entity_name}': {len(chunk_ids)} chunks"
+                    )
+
+            if not all_chunk_ids:
+                logger.warning(f"No chunks found for entities: {entity_names}")
+                return {
+                    "status": "success",
+                    "message": "No chunks found for provided entities",
+                    "chunks": [],
+                    "metadata": {
+                        "entities_requested": entity_names,
+                        "entities_found": 0,
+                        "total_chunks_found": 0,
+                        "chunks_returned": 0,
+                        "reranking_applied": False,
+                    },
+                }
+
+            logger.info(
+                f"Found {len(all_chunk_ids)} unique chunks for {len(chunk_ids_by_entity)} entities"
+            )
+
+            # ============ STEP 2: Retrieve chunk contents ============
+            chunk_data_list = await self.text_chunks_db.get_by_ids(
+                list(all_chunk_ids)
+            )
+
+            chunks_with_content = []
+            for chunk_id, chunk_data in zip(all_chunk_ids, chunk_data_list):
+                if chunk_data is not None and "content" in chunk_data:
+                    chunks_with_content.append(
+                        {
+                            "chunk_id": chunk_id,
+                            "content": chunk_data.get("content", ""),
+                            "file_path": chunk_data.get("file_path", "unknown"),
+                            "full_doc_id": chunk_data.get("full_doc_id", ""),
+                        }
+                    )
+
+            if not chunks_with_content:
+                return {
+                    "status": "success",
+                    "message": "No valid chunk content found",
+                    "chunks": [],
+                    "metadata": {
+                        "entities_requested": entity_names,
+                        "entities_found": len(chunk_ids_by_entity),
+                        "total_chunks_found": len(all_chunk_ids),
+                        "chunks_returned": 0,
+                        "reranking_applied": False,
+                    },
+                }
+
+            logger.info(f"Retrieved {len(chunks_with_content)} chunks with content")
+
+            # ============ STEP 3: Semantic search (similarity scoring) ============
+            # Compute query embedding
+            query_embeddings = await self.embedding_func([query])
+            query_embedding = query_embeddings[0]
+
+            scored_chunks = []
+            for chunk in chunks_with_content:
+                try:
+                    chunk_embeddings = await self.embedding_func(
+                        [chunk["content"]]
+                    )
+                    chunk_embedding = chunk_embeddings[0]
+
+                    # Compute cosine similarity
+                    dot_product = sum(
+                        a * b for a, b in zip(query_embedding, chunk_embedding)
+                    )
+                    norm1 = math.sqrt(
+                        sum(a * a for a in query_embedding)
+                    )
+                    norm2 = math.sqrt(
+                        sum(b * b for b in chunk_embedding)
+                    )
+
+                    if norm1 > 0 and norm2 > 0:
+                        similarity = dot_product / (norm1 * norm2)
+                    else:
+                        similarity = 0.0
+
+                    chunk["similarity_score"] = similarity
+                    scored_chunks.append(chunk)
+
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to score chunk {chunk['chunk_id']}: {e}"
+                    )
+                    chunk["similarity_score"] = 0.0
+                    scored_chunks.append(chunk)
+
+            # Sort by similarity
+            scored_chunks.sort(
+                key=lambda x: x.get("similarity_score", 0), reverse=True
+            )
+
+            logger.info(
+                f"Scored {len(scored_chunks)} chunks, top similarity: {scored_chunks[0].get('similarity_score', 0):.4f}"
+            )
+
+            # ============ STEP 4: Reranking (if enabled) ============
+            top_k = param.chunk_top_k or param.top_k
+            final_chunks = scored_chunks
+            reranking_applied = False
+
+            if param.enable_rerank and self.rerank_model_func:
+                try:
+                    logger.info(
+                        f"Applying reranking to top {min(top_k * 2, len(scored_chunks))} chunks"
+                    )
+
+                    chunks_to_rerank = scored_chunks[: min(top_k * 2, len(scored_chunks))]
+                    documents = [
+                        {
+                            "text": chunk["content"],
+                            "id": chunk["chunk_id"],
+                        }
+                        for chunk in chunks_to_rerank
+                    ]
+
+                    # Call rerank function
+                    rerank_results = await self.rerank_model_func(
+                        query=query, documents=documents, top_k=min(top_k, len(documents))
+                    )
+
+                    # Reorder based on rerank results
+                    reranked_ids = [result.get("id") for result in rerank_results]
+                    final_chunks = []
+                    for chunk_id in reranked_ids:
+                        for chunk in chunks_to_rerank:
+                            if chunk["chunk_id"] == chunk_id:
+                                final_chunks.append(chunk)
+                                break
+
+                    logger.info(
+                        f"Reranking completed, {len(final_chunks)} chunks selected"
+                    )
+                    reranking_applied = True
+
+                except Exception as e:
+                    logger.warning(
+                        f"Reranking failed: {e}, using similarity scores"
+                    )
+                    final_chunks = scored_chunks[:top_k]
+                    reranking_applied = False
+            else:
+                final_chunks = scored_chunks[:top_k]
+
+            # ============ STEP 5: Format results ============
+            result_chunks = [
+                {
+                    "chunk_id": chunk["chunk_id"],
+                    "content": chunk["content"],
+                    "file_path": chunk["file_path"],
+                    "similarity_score": chunk.get("similarity_score", 0.0),
+                    "rank": i + 1,
+                }
+                for i, chunk in enumerate(final_chunks)
+            ]
+
+            logger.info(
+                f"Entity-filtered retrieval completed: {len(result_chunks)} chunks returned"
+            )
+
+            return {
+                "status": "success",
+                "message": f"Retrieved {len(result_chunks)} chunks",
+                "chunks": result_chunks,
+                "metadata": {
+                    "query": query,
+                    "entities_requested": entity_names,
+                    "entities_found": len(chunk_ids_by_entity),
+                    "total_chunks_found": len(all_chunk_ids),
+                    "chunks_with_content": len(chunks_with_content),
+                    "chunks_returned": len(result_chunks),
+                    "reranking_applied": reranking_applied,
+                },
+            }
+
+        except Exception as e:
+            logger.error(f"Entity-filtered retrieval error: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "status": "error",
+                "message": str(e),
+                "chunks": [],
+                "metadata": {
+                    "entities_requested": entity_names,
+                    "error_details": str(e),
+                },
+            }
+
+    def query_by_entities(
+        self,
+        entity_names: list[str],
+        query: str,
+        param: QueryParam = QueryParam(),
+    ) -> dict[str, Any]:
+        """Synchronous wrapper for aquery_by_entities."""
+        loop = always_get_an_event_loop()
+        return loop.run_until_complete(
+            self.aquery_by_entities(entity_names, query, param)
+        )
+
+    async def afilter_data(
+        self,
+        query: str,
+        filter_config: dict[str, Any] = None,
+        param: QueryParam = QueryParam(),
+    ) -> dict[str, Any]:
+        """
+        Advanced filtering query: Filter chunks by entity properties and perform naive RAG.
+
+        This method allows users to filter chunks based on entity properties (name, type, description,
+        function, chunk_ids, etc) and then perform semantic search only on filtered chunks.
+
+        Args:
+            query: Query string for semantic search
+            filter_config: Dictionary with entity filtering conditions. Example:
+                {
+                    "entity_type": ["component", "equipment"],  # OR condition between values
+                    "entity_name": ["Impeller", "Compressor"],  # OR condition between values
+                    "has_property": ["function", "source_id"]   # Entity must have these properties
+                }
+                Multiple filter keys use AND logic (all must match)
+            param: QueryParam with configuration (top_k, chunk_top_k, enable_rerank, etc)
+
+        Returns:
+            dict[str, Any]: Structured result containing:
+                {
+                    "status": "success" | "error",
+                    "message": str,
+                    "chunks": [
+                        {
+                            "chunk_id": str,
+                            "content": str,
+                            "file_path": str,
+                            "similarity_score": float,
+                            "rank": int,
+                            "source_entity": str,  # Entity that provided this chunk
+                        },
+                        ...
+                    ],
+                    "metadata": {
+                        "query": str,
+                        "filters_applied": dict,
+                        "entities_found": int,
+                        "entities_after_filter": int,
+                        "total_chunks_before_filter": int,
+                        "total_chunks_after_filter": int,
+                        "chunks_returned": int,
+                        "reranking_applied": bool,
+                        "semantic_search_applied": bool,
+                    }
+                }
+        """
+        import math
+
+        try:
+            if not filter_config:
+                filter_config = {}
+
+            logger.info(
+                f"Filter data query: filter_config={filter_config}, query='{query[:100]}'"
+            )
+
+            # ============ STEP 1: Get all entities and apply filters ============
+            all_nodes = await self.chunk_entity_relation_graph.get_all_nodes()
+            
+            if not all_nodes:
+                logger.warning("No entities found in knowledge graph")
+                return {
+                    "status": "success",
+                    "message": "No entities found in knowledge graph",
+                    "chunks": [],
+                    "metadata": {
+                        "query": query,
+                        "filters_applied": filter_config,
+                        "entities_found": 0,
+                        "entities_after_filter": 0,
+                        "total_chunks_before_filter": 0,
+                        "total_chunks_after_filter": 0,
+                        "chunks_returned": 0,
+                        "reranking_applied": False,
+                        "semantic_search_applied": False,
+                    },
+                }
+
+            # Filter entities based on config
+            filtered_entities = []
+            total_entities = len(all_nodes)
+
+            for entity in all_nodes:
+                matches_all_filters = True
+
+                # Check each filter condition (AND logic between filters)
+                for filter_key, filter_values in filter_config.items():
+                    if filter_key == "has_property":
+                        # Check if entity has all required properties
+                        for required_prop in filter_values:
+                            if required_prop not in entity:
+                                matches_all_filters = False
+                                break
+                    elif filter_key == "entity_name":
+                        # OR logic within same filter
+                        if entity.get("entity_id") not in filter_values:
+                            matches_all_filters = False
+                    elif filter_key == "entity_type":
+                        # OR logic within same filter
+                        if entity.get("entity_type") not in filter_values:
+                            matches_all_filters = False
+                    elif filter_key == "description_contains":
+                        # Check if description contains any of the keywords
+                        description = (entity.get("description") or "").lower()
+                        if not any(kw.lower() in description for kw in filter_values):
+                            matches_all_filters = False
+                    else:
+                        # Generic filter: check if entity[filter_key] matches any filter_value
+                        if entity.get(filter_key) not in filter_values:
+                            matches_all_filters = False
+
+                    if not matches_all_filters:
+                        break
+
+                if matches_all_filters:
+                    filtered_entities.append(entity)
+
+            logger.info(
+                f"Filtered entities: {total_entities} -> {len(filtered_entities)} entities"
+            )
+
+            # ============ STEP 2: Collect chunk IDs from filtered entities ============
+            chunk_ids_by_entity = {}
+            all_chunk_ids = set()
+            total_chunks_before = 0
+
+            for entity in filtered_entities:
+                entity_name = entity.get("entity_id") or entity.get("id")
+                if not entity_name:
+                    continue
+
+                # Get chunks from entity_chunks storage
+                entity_chunks_data = await self.entity_chunks.get_by_id(entity_name)
+                if entity_chunks_data and isinstance(entity_chunks_data, dict):
+                    chunk_ids = entity_chunks_data.get("chunk_ids", [])
+                    chunk_ids_by_entity[entity_name] = chunk_ids
+                    all_chunk_ids.update(chunk_ids)
+                    total_chunks_before += len(chunk_ids)
+                    logger.debug(
+                        f"Entity '{entity_name}': {len(chunk_ids)} chunks"
+                    )
+
+            logger.info(
+                f"Found {len(all_chunk_ids)} unique chunks from {len(chunk_ids_by_entity)} filtered entities"
+            )
+
+            if not all_chunk_ids:
+                logger.warning("No chunks found for filtered entities")
+                return {
+                    "status": "success",
+                    "message": "No chunks found for filtered entities",
+                    "chunks": [],
+                    "metadata": {
+                        "query": query,
+                        "filters_applied": filter_config,
+                        "entities_found": total_entities,
+                        "entities_after_filter": len(filtered_entities),
+                        "total_chunks_before_filter": total_chunks_before,
+                        "total_chunks_after_filter": 0,
+                        "chunks_returned": 0,
+                        "reranking_applied": False,
+                        "semantic_search_applied": False,
+                    },
+                }
+
+            # ============ STEP 3: Retrieve chunk contents ============
+            chunk_data_list = await self.text_chunks.get_by_ids(
+                list(all_chunk_ids)
+            )
+
+            chunks_with_content = []
+            for chunk_id, chunk_data in zip(all_chunk_ids, chunk_data_list):
+                if chunk_data is not None and "content" in chunk_data:
+                    # Find which entity this chunk belongs to
+                    source_entity = None
+                    for entity_name, chunk_ids in chunk_ids_by_entity.items():
+                        if chunk_id in chunk_ids:
+                            source_entity = entity_name
+                            break
+
+                    chunks_with_content.append(
+                        {
+                            "chunk_id": chunk_id,
+                            "content": chunk_data.get("content", ""),
+                            "file_path": chunk_data.get("file_path", "unknown"),
+                            "full_doc_id": chunk_data.get("full_doc_id", ""),
+                            "source_entity": source_entity,
+                        }
+                    )
+
+            logger.info(f"Retrieved {len(chunks_with_content)} chunks with content")
+
+            if not chunks_with_content:
+                return {
+                    "status": "success",
+                    "message": "No valid chunk content found",
+                    "chunks": [],
+                    "metadata": {
+                        "query": query,
+                        "filters_applied": filter_config,
+                        "entities_found": total_entities,
+                        "entities_after_filter": len(filtered_entities),
+                        "total_chunks_before_filter": total_chunks_before,
+                        "total_chunks_after_filter": len(all_chunk_ids),
+                        "chunks_returned": 0,
+                        "reranking_applied": False,
+                        "semantic_search_applied": False,
+                    },
+                }
+
+            # ============ STEP 4: Semantic search on filtered chunks ============
+            # Only perform semantic search if query is not empty
+            semantic_search_applied = bool(query.strip())
+
+            if semantic_search_applied:
+                # Compute query embedding
+                query_embeddings = await self.embedding_func([query])
+                query_embedding = query_embeddings[0]
+
+                scored_chunks = []
+                for chunk in chunks_with_content:
+                    try:
+                        chunk_embeddings = await self.embedding_func(
+                            [chunk["content"]]
+                        )
+                        chunk_embedding = chunk_embeddings[0]
+
+                        # Compute cosine similarity
+                        dot_product = sum(
+                            a * b for a, b in zip(query_embedding, chunk_embedding)
+                        )
+                        norm1 = math.sqrt(sum(a * a for a in query_embedding))
+                        norm2 = math.sqrt(sum(b * b for b in chunk_embedding))
+
+                        if norm1 > 0 and norm2 > 0:
+                            similarity = dot_product / (norm1 * norm2)
+                        else:
+                            similarity = 0.0
+
+                        chunk["similarity_score"] = similarity
+                        scored_chunks.append(chunk)
+
+                    except Exception as e:
+                        logger.warning(f"Failed to score chunk {chunk['chunk_id']}: {e}")
+                        chunk["similarity_score"] = 0.0
+                        scored_chunks.append(chunk)
+
+                # Sort by similarity
+                scored_chunks.sort(
+                    key=lambda x: x.get("similarity_score", 0), reverse=True
+                )
+
+                logger.info(
+                    f"Scored {len(scored_chunks)} chunks, top similarity: {scored_chunks[0].get('similarity_score', 0):.4f}"
+                )
+
+                final_chunks = scored_chunks
+            else:
+                # No semantic search, just use all chunks with 0 similarity
+                for chunk in chunks_with_content:
+                    chunk["similarity_score"] = 0.0
+                final_chunks = chunks_with_content
+
+            # ============ STEP 5: Reranking (if enabled) ============
+            top_k = param.chunk_top_k or param.top_k
+            reranking_applied = False
+
+            if param.enable_rerank and self.rerank_model_func and semantic_search_applied:
+                try:
+                    logger.info(
+                        f"Applying reranking to top {min(top_k * 2, len(final_chunks))} chunks"
+                    )
+
+                    chunks_to_rerank = final_chunks[: min(top_k * 2, len(final_chunks))]
+                    documents = [
+                        {
+                            "text": chunk["content"],
+                            "id": chunk["chunk_id"],
+                        }
+                        for chunk in chunks_to_rerank
+                    ]
+
+                    # Call rerank function
+                    rerank_results = await self.rerank_model_func(
+                        query=query, documents=documents, top_k=min(top_k, len(documents))
+                    )
+
+                    # Reorder based on rerank results
+                    reranked_ids = [result.get("id") for result in rerank_results]
+                    final_chunks = []
+                    for chunk_id in reranked_ids:
+                        for chunk in chunks_to_rerank:
+                            if chunk["chunk_id"] == chunk_id:
+                                final_chunks.append(chunk)
+                                break
+
+                    logger.info(
+                        f"Reranking completed, {len(final_chunks)} chunks selected"
+                    )
+                    reranking_applied = True
+
+                except Exception as e:
+                    logger.warning(
+                        f"Reranking failed: {e}, using similarity scores"
+                    )
+                    final_chunks = final_chunks[:top_k]
+                    reranking_applied = False
+            else:
+                final_chunks = final_chunks[:top_k]
+
+            # ============ STEP 6: Format results ============
+            result_chunks = [
+                {
+                    "chunk_id": chunk["chunk_id"],
+                    "content": chunk["content"],
+                    "file_path": chunk["file_path"],
+                    "similarity_score": chunk.get("similarity_score", 0.0),
+                    "source_entity": chunk.get("source_entity", ""),
+                    "rank": i + 1,
+                }
+                for i, chunk in enumerate(final_chunks)
+            ]
+
+            logger.info(
+                f"Filter data query completed: {len(result_chunks)} chunks returned"
+            )
+
+            return {
+                "status": "success",
+                "message": f"Retrieved {len(result_chunks)} filtered chunks",
+                "chunks": result_chunks,
+                "metadata": {
+                    "query": query,
+                    "filters_applied": filter_config,
+                    "entities_found": total_entities,
+                    "entities_after_filter": len(filtered_entities),
+                    "total_chunks_before_filter": total_chunks_before,
+                    "total_chunks_after_filter": len(all_chunk_ids),
+                    "chunks_returned": len(result_chunks),
+                    "reranking_applied": reranking_applied,
+                    "semantic_search_applied": semantic_search_applied,
+                },
+            }
+
+        except Exception as e:
+            logger.error(f"Filter data query error: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "status": "error",
+                "message": str(e),
+                "chunks": [],
+                "metadata": {
+                    "filter_config": filter_config,
+                    "error_details": str(e),
+                },
+            }
+
+    def filter_data(
+        self,
+        query: str,
+        filter_config: dict[str, Any] = None,
+        param: QueryParam = QueryParam(),
+    ) -> dict[str, Any]:
+        """Synchronous wrapper for afilter_data."""
+        loop = always_get_an_event_loop()
+        return loop.run_until_complete(
+            self.afilter_data(query, filter_config, param)
+        )
+
     async def aquery_llm(
         self,
         query: str,
