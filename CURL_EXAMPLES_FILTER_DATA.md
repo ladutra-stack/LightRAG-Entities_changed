@@ -17,6 +17,8 @@ POST http://localhost:9621/query/filter_data
 | `query` | string | Não | `""` | Texto para busca semântica dentro dos filtros |
 | `filter_config` | object | Não | `null` | Configuração de filtros para entidades |
 | `top_k` | int | Não | 10 | Número máximo de entidades a retornar |
+| `chunk_top_k` | int | Não | `null` | Número de chunks a recuperar antes do reranking |
+| `enable_rerank` | bool | Não | `null` | Ativar/desativar reranking para chunks |
 | `mode` | string | Não | `"local"` | Modo de operação (`local`, `global`, `hybrid`, `mix`, `naive`, `bypass`) |
 | `only_need_context` | bool | Não | false | Retornar apenas contexto |
 | `include_references` | bool | Não | true | Incluir informações de referência |
@@ -69,7 +71,7 @@ curl -X POST http://localhost:9621/query/filter_data \
     "top_k": 5
   }'
 
-# Teste 3: Combinação - entity_id + busca semântica
+# Teste 3: Combinação - entity_id + busca semântica + reranking
 curl -X POST http://localhost:9621/query/filter_data \
   -H "Content-Type: application/json" \
   -d '{
@@ -77,7 +79,9 @@ curl -X POST http://localhost:9621/query/filter_data \
     "filter_config": {
       "entity_id": ["ent-abc123", "ent-def456"]
     },
-    "top_k": 5
+    "top_k": 5,
+    "chunk_top_k": 20,
+    "enable_rerank": true
   }'
 ```
 
@@ -168,9 +172,9 @@ curl -X POST http://localhost:9621/query/filter_data \
 
 ---
 
-## 🎯 Exemplo 2: Múltiplos Filtros (AND logic)
+## 🎯 Exemplo 2: Filtro por Tipo de Entidade
 
-Buscar equipamentos que têm função específica.
+Recuperar chunks apenas de componentes.
 
 ```bash
 curl -X POST http://localhost:9621/query/filter_data \
@@ -230,7 +234,84 @@ curl -X POST http://localhost:9621/query/filter_data \
 
 ---
 
-## 🎯 Exemplo 5: Sem Filtro (Usar Todos)
+## 🎯 Exemplo 5: Com Reranking (RAG Semântico Otimizado)
+
+Usar reranking para melhorar a qualidade dos resultados recuperados.
+
+```bash
+curl -X POST http://localhost:9621/query/filter_data \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "compression and pressure control",
+    "filter_config": {
+      "entity_type": ["equipment"]
+    },
+    "top_k": 5,
+    "chunk_top_k": 20,
+    "enable_rerank": true
+  }'
+```
+
+**Explicação:**
+- `chunk_top_k: 20` - Recupera 20 chunks inicialmente
+- `enable_rerank: true` - Aplica reranking (reordena por relevância)
+- Apenas os 5 melhores (`top_k`) são retornados após reranking
+- Resulta em **melhor qualidade** mesmo com `top_k` pequeno
+
+**Response:**
+```json
+{
+  "status": "success",
+  "message": "Retrieved 5 filtered entities",
+  "data": {
+    "entities": [...],
+    "chunks": [
+      {
+        "content": "The centrifugal compressor uses pressure control...",
+        "similarity_score": 0.94,
+        "rank": 1
+      },
+      {
+        "content": "Pressure relief valve maintains system pressure...",
+        "similarity_score": 0.91,
+        "rank": 2
+      }
+    ]
+  },
+  "metadata": {
+    "reranking_applied": true,
+    "chunks_before_rerank": 20,
+    "chunks_after_rerank": 5
+  }
+}
+```
+
+---
+
+## 🎯 Exemplo 6: Reranking Desativado (Busca Rápida)
+
+Desativar reranking para busca mais rápida (trade-off entre velocidade e qualidade).
+
+```bash
+curl -X POST http://localhost:9621/query/filter_data \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "bearing system",
+    "filter_config": {
+      "entity_type": ["component"]
+    },
+    "top_k": 5,
+    "enable_rerank": false
+  }'
+```
+
+**Vantagens:**
+- ✅ Mais rápido (sem overhead de reranking)
+- ❌ Pode ter qualidade menor
+
+---
+
+## 🎯 Exemplo 7: Sem Filtro (Usar Todos)
 
 Busca semântica em todos os chunks, sem filtros.
 
@@ -245,7 +326,7 @@ curl -X POST http://localhost:9621/query/filter_data \
 
 ---
 
-## 🎯 Exemplo 6: Com Modo Local (Sem Resumo LLM)
+## 🎯 Exemplo 8: Com Modo Local (Sem Resumo LLM)
 
 ```bash
 curl -X POST http://localhost:9621/query/filter_data \
@@ -262,7 +343,7 @@ curl -X POST http://localhost:9621/query/filter_data \
 
 ---
 
-## 🎯 Exemplo 7: Com API Key
+## 🎯 Exemplo 9: Com API Key
 
 Se você tem autenticação configurada:
 
@@ -281,7 +362,7 @@ curl -X POST http://localhost:9621/query/filter_data \
 
 ---
 
-## 🎯 Exemplo 8: Com Query Param (Alternativo)
+## 🎯 Exemplo 10: Com Query Param (Alternativo)
 
 Você também pode usar query params se preferir:
 

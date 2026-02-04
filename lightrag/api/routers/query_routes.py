@@ -209,9 +209,20 @@ class FilterDataRequest(BaseModel):
         description="Maximum number of entities to retrieve",
     )
 
+    chunk_top_k: Optional[int] = Field(
+        ge=1,
+        default=None,
+        description="Number of text chunks to retrieve initially from vector search and keep after reranking",
+    )
+
     mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = Field(
         default="local",
         description="Query mode for filtering",
+    )
+
+    enable_rerank: Optional[bool] = Field(
+        default=None,
+        description="Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued.",
     )
 
     only_need_context: Optional[bool] = Field(
@@ -1299,13 +1310,21 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 - 500: Processing error
         """
         try:
-            # Get all data first using the raw query (empty or provided)
-            param = QueryRequest(
-                query=request.query if request.query else "all entities",
-                mode=request.mode,
-                top_k=request.top_k,
-                only_need_context=request.only_need_context,
-            ).to_query_params(False)
+            # Build QueryRequest with reranking parameters
+            query_request_data = {
+                "query": request.query if request.query else "all entities",
+                "mode": request.mode,
+                "top_k": request.top_k,
+                "only_need_context": request.only_need_context,
+            }
+            
+            # Add optional reranking parameters if provided
+            if request.chunk_top_k is not None:
+                query_request_data["chunk_top_k"] = request.chunk_top_k
+            if request.enable_rerank is not None:
+                query_request_data["enable_rerank"] = request.enable_rerank
+            
+            param = QueryRequest(**query_request_data).to_query_params(False)
 
             # Get the data from RAG
             response = await rag.aquery_data(request.query if request.query else "", param=param)
