@@ -77,33 +77,44 @@ KNOWN_TINY_PARTS = _load_list_from_env("ENTITY_CUSTOM_TINY_PARTS", DEFAULT_TINY_
 PURE_BRANDS = _load_list_from_env("ENTITY_CUSTOM_BRANDS", DEFAULT_BRANDS)
 
 # Verbs that indicate machine functions (acceptable)
+# NOTE: This is an ORIENTATIVE list, not exhaustive
+# - Only includes CLEAR machine function verbs (unambiguous)
+# - Ambiguous verbs like "manage", "monitor", "carry" are excluded (could be administrative)
+# - Default strategy: if verb is unknown, REJECT for Type="Other", ALLOW for Type="Equipment/Component"
 MACHINE_FUNCTION_VERBS = {
-    # Transmission/Control
-    "transmit", "control", "regulate", "manage", "direct", "guide",
+    # Transmission/Control (clear machine functions)
+    "transmit", "control", "regulate", "direct", "guide",
     "modulate", "coordinate", "synchronize",
-    # Conversion/Transformation
+    # Conversion/Transformation (clear machine functions)
     "convert", "compress", "expand", "generate", "produce", "pump",
     "circulate", "flow", "distribute", "supply", "transfer",
     "cool", "heat", "warm", "dissipate",
-    # Protection/Isolation
+    # Protection/Isolation (clear machine functions)
     "protect", "relieve", "vent", "seal", "dampen", "isolate",
     "filter", "separate", "prevent", "block", "absorb",
-    # Movement/Positioning
+    # Movement/Positioning (clear machine functions)
     "rotate", "move", "position", "hold", "support", "suspend",
-    "bear", "carry", "lift", "lower", "raise",
-    # Sensing
-    "measure", "sense", "detect", "monitor", "indicate",
-    # Lubrication
+    "bear", "lift", "lower", "raise",
+    # Sensing (clear machine functions)
+    "measure", "sense", "detect", "indicate",
+    # Lubrication (clear machine functions)
     "lubricate", "coat",
 }
 
 # Verbs that indicate administrative/non-machine functions (reject)
+# NOTE: This is an ORIENTATIVE list, not exhaustive. Default is to REJECT verbs not in MACHINE_FUNCTION_VERBS
 ADMINISTRATIVE_VERBS = {
-    "manage", "organize", "track", "log", "record", "report",
+    # Operational/Procedural (inspection, maintenance planning - NOT machine functions)
+    "inspect", "check", "verify", "analyze", "examine", "assess",
+    "test", "validate", "audit", "review", "diagnose",
+    # Maintenance planning/scheduling/performing (administrative activities)
+    "schedule", "plan", "arrange", "prepare", "organize", "perform", "execute",
+    "conduct", "carry", "implement", "complete",
+    # Administrative/Business  
+    "manage", "track", "log", "record", "report",
     "sell", "buy", "trade", "market", "advertise",
-    "communicate", "notify", "alert", "announce",
-    "approve", "authorize", "validate", "verify",
-    "schedule", "plan", "arrange",
+    "communicate", "notify", "alert", "announce", "inform", "document",
+    "approve", "authorize", "sign", "certify", "confirm",
 }
 
 
@@ -217,36 +228,72 @@ def is_valid_equipment_entity(
         if verb_match:
             main_verb = verb_match.group(1).lower()
             
-            # Check if it's an administrative verb
+            # Strategy: CONSERVATIVE by default
+            # 1. REJECT if administrative verb
+            # 2. ACCEPT if machine verb
+            # 3. REJECT for Type="Other" if unknown
+            # 4. ALLOW for Type="Equipment/Component" if unknown (since list is orientative)
+            
+            # Step 1: Check if it's an administrative verb (these are ALWAYS rejected)
             if main_verb in ADMINISTRATIVE_VERBS:
-                reason = f"Administrative function verb '{main_verb}' not suitable for equipment: '{entity_function}'"
+                reason = f"Administrative/procedural verb '{main_verb}' (not machine): '{entity_function}'"
                 if debug:
                     logger.info(f"[REJECTED] {entity_name} - {reason}")
                 return False, reason
             
-            # Check if it's a known machine verb
-            if main_verb not in MACHINE_FUNCTION_VERBS:
-                # Unknown verb - check if it's a real word (not gibberish)
+            # Step 2: Check if it's a known machine verb (these are ACCEPTED)
+            if main_verb in MACHINE_FUNCTION_VERBS:
+                reason = f"Valid machine function: '{entity_function}'"
+                if debug:
+                    logger.debug(f"Machine function accepted for '{entity_name}': {entity_function}")
+                return True, reason
+            
+            # Step 3: Unknown verb - apply TYPE-specific logic
+            # Type "Other" is CONSERVATIVE - unknown verb = likely procedural/administrative
+            if normalized_type == "other":
+                reason = f"Type 'Other' with unknown verb '{main_verb}' - likely procedural/administrative: '{entity_function}'"
+                if debug:
+                    logger.info(f"[REJECTED] {entity_name} - {reason}")
+                return False, reason
+            
+            # Type "Equipment/Component" - allow unknown verbs since MACHINE_FUNCTION_VERBS is ORIENTATIVE
+            elif normalized_type in ["equipment", "component", "system", "device"]:
+                # Validate it's a real word (not gibberish)
                 if len(main_verb) >= 3 and main_verb.isalpha():
-                    # Real word but uncommon - allow with warning
-                    reason = f"Accepted (uncommon verb: {main_verb})"
+                    # Real word but uncommon - allow with warning (since list is orientative)
+                    reason = f"Accepted with unknown verb '{main_verb}' (type: {entity_type})"
                     if debug:
-                        logger.debug(f"Uncommon machine function verb '{main_verb}' for entity '{entity_name}': '{entity_function}'")
+                        logger.debug(f"Unknown verb '{main_verb}' for {entity_type} '{entity_name}': {entity_function}")
                     return True, reason
                 else:
                     # Gibberish or too short
-                    reason = f"Invalid function verb: '{entity_function}'"
+                    reason = f"Invalid/gibberish function verb '{main_verb}': '{entity_function}'"
                     if debug:
                         logger.info(f"[REJECTED] {entity_name} - {reason}")
                     return False, reason
+            
+            # Any other type without recognized verb - unknown, be conservative
+            else:
+                reason = f"Type '{entity_type}' with unknown verb '{main_verb}': '{entity_function}'"
+                if debug:
+                    logger.debug(f"Unknown verb for entity type '{entity_type}': {entity_function}")
+                return False, reason
     
-    # Check 7: If no function or function is "unknown", still accept if type is reasonable
+    # Check 7: If no function or function is "unknown", validate based on type
     if not normalized_func or normalized_func == "unknown":
         if is_brand_type:
             reason = f"Valid manufacturer/brand (no function): '{entity_name}'"
             if debug:
                 logger.info(f"[ACCEPTED] {entity_name} - {reason}")
             return True, reason
+        
+        # Type "Other" without proper function should be rejected
+        if normalized_type == "other":
+            reason = f"Type 'Other' with no function - likely not equipment: '{entity_name}'"
+            if debug:
+                logger.info(f"[REJECTED] {entity_name} - {reason}")
+            return False, reason
+        
         # For equipment/component types without function, still accept
         # (LLM may not always provide good functions)
         reason = f"Accepted (no function, type: {entity_type})"
@@ -266,13 +313,16 @@ def deduplicate_entities_advanced(
     filter_config: Optional[Dict] = None,
 ) -> list[Dict]:
     """
-    Deduplicate entities using 6 strategies:
-    1. Singular/Plural normalization
-    2. Case normalization
-    3. Punctuation normalization
-    4. Whitespace normalization
-    5. Suffix merging
-    6. Prefix/Translation handling
+    Deduplicate entities using simple normalization strategies:
+    1. Singular/Plural normalization (e.g., "Bearings" → "bearing")
+    2. Case normalization (e.g., "Oil Pump" → "oil pump")
+    3. Punctuation normalization (e.g., "Dry-Gas-Seal" → "Dry Gas Seal")
+    4. Whitespace normalization (e.g., "Gas  Turbine" → "Gas Turbine")
+    5. Suffix merging (e.g., "X System" + "X" → one entity)
+    6. Translation handling (e.g., "Gás Turbina" → "Gas Turbine")
+    
+    NOTE: Does NOT handle complex cases like acronym matching (e.g., "IGV" vs "Inlet Guide Vane").
+    Those are kept as separate entities intentionally for simplicity.
     
     Args:
         entities: List of entity dicts with keys: entity_name, entity_type, etc.
@@ -299,10 +349,11 @@ def deduplicate_entities_advanced(
         if not original_name:
             continue
         
-        # Apply all 6 normalization strategies
+        # Apply normalization strategies (simple, no acronyms)
         normalized = _normalize_entity_name(original_name)
         
         if normalized not in dedup_map:
+            # New entity
             dedup_map[normalized] = entity.copy()
             merge_history[normalized] = [original_name]
         else:
@@ -351,8 +402,11 @@ def _normalize_entity_name(name: str) -> str:
     # Strategy 4: Suffix merging (remove common suffixes)
     normalized = _merge_suffixes(normalized)
     
-    # Strategy 5: Singular/Plural normalization
-    normalized = _normalize_singular_plural(normalized)
+    # Strategy 5: Normalize plural/singular for EACH WORD
+    # This handles cases like "Bearings Covers" → "bearing cover"
+    words = normalized.split()
+    normalized_words = [_normalize_singular_plural(word) for word in words]
+    normalized = " ".join(normalized_words)
     
     # Strategy 6: Prefix/Translation handling
     normalized = _handle_translations(normalized)
@@ -377,16 +431,27 @@ def _normalize_singular_plural(name: str) -> str:
     # Fallback simple rules (no inflect dependency)
     name_lower = name.lower()
     
-    # Handle common plural endings
-    if name_lower.endswith("ings"):
-        return name[:-4] if len(name) > 4 else name
-    elif name_lower.endswith("ing"):
-        return name[:-3] if len(name) > 3 else name
-    elif name_lower.endswith("ies"):
-        return name[:-3] + "y" if len(name) > 3 else name
-    elif name_lower.endswith("es") and not name_lower.endswith("ss"):
+    # Handle common plural endings (check specifics BEFORE generals)
+    # Order matters: check longer patterns first to avoid over-stripping
+    if name_lower.endswith("sses"):  # glasses -> glass
         return name[:-2] if len(name) > 2 else name
-    elif name_lower.endswith("s") and not name_lower.endswith("ss"):
+    elif name_lower.endswith("ies"):  # batteries -> battery
+        return name[:-3] + "y" if len(name) > 3 else name
+    elif name_lower.endswith("ches"):  # matches -> match
+        return name[:-2] if len(name) > 2 else name
+    elif name_lower.endswith("shes"):  # brushes -> brush
+        return name[:-2] if len(name) > 2 else name
+    elif name_lower.endswith("xes"):  # boxes -> box
+        return name[:-2] if len(name) > 2 else name
+    elif name_lower.endswith("zes"):  # buzzes -> buzz
+        return name[:-2] if len(name) > 2 else name
+    elif name_lower.endswith("oes"):  # tomatoes -> tomato
+        return name[:-2] if len(name) > 2 else name
+    elif name_lower.endswith("us"):  # cactus -> cactus (keep as-is)
+        return name
+    elif name_lower.endswith("es") and not name_lower.endswith("ss"):  # caves -> cave, dishes -> dish
+        return name[:-2] if len(name) > 2 else name
+    elif name_lower.endswith("s") and not name_lower.endswith("ss"):  # seals -> seal, bearings -> bearing
         return name[:-1] if len(name) > 1 else name
     
     return name
@@ -424,7 +489,7 @@ def _merge_suffixes(name: str) -> str:
 
 
 def _handle_translations(name: str) -> str:
-    """Handle Portuguese to English translations for common terms."""
+    """Handle Portuguese to English translations for common terms and OCR errors."""
     # Simple translation map for Portuguese industrial terms
     translations = {
         "gás turbina": "gas turbine",
@@ -441,8 +506,17 @@ def _handle_translations(name: str) -> str:
     }
     
     name_lower = name.lower()
+    
+    # Check for OCR/typo variations of known manufacturers
+    # Normalize common OCR errors for "Nuovo Pignone" variants
+    if "pignone" in name_lower or "pignona" in name_lower or "pignano" in name_lower:
+        # All these variants should normalize to "nuovo pignone"
+        if "tecnologie" in name_lower:
+            return "nuovo pignone tecnologie s.r.l."
+    
     for pt_term, en_term in translations.items():
         if name_lower == pt_term:
             return en_term
     
     return name
+

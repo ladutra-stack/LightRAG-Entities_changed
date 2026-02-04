@@ -5,6 +5,7 @@ from pathlib import Path
 import asyncio
 import json
 import json_repair
+import os
 from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
 
@@ -443,16 +444,20 @@ async def _handle_single_entity_extraction(
             entity_function = "unknown"  # Set default value instead of rejecting
 
         # VALIDATION: Check if entity is valid equipment entity (MUDANÇA 2)
-        is_valid, validation_reason = is_valid_equipment_entity(
-            entity_name=entity_name,
-            entity_type=entity_type,
-            entity_function=entity_function,
-            filter_config=None
-        )
+        # Only validate if ENABLE_ENTITY_FILTER is set to true
+        enable_entity_filter = os.getenv("ENABLE_ENTITY_FILTER", "true").lower() == "true"
         
-        if not is_valid:
-            logger.debug(f"Entity validation failed for '{entity_name}': {validation_reason}")
-            return None  # Reject invalid entities
+        if enable_entity_filter:
+            is_valid, validation_reason = is_valid_equipment_entity(
+                entity_name=entity_name,
+                entity_type=entity_type,
+                entity_function=entity_function,
+                filter_config=None
+            )
+            
+            if not is_valid:
+                logger.debug(f"Entity validation failed for '{entity_name}': {validation_reason}")
+                return None  # Reject invalid entities
 
         return dict(
             entity_name=entity_name,
@@ -2529,9 +2534,15 @@ async def merge_nodes_and_edges(
         for entity_dict in entities_list:
             all_entities_list.append(entity_dict)
     
-    # Apply advanced deduplication (6 strategies)
-    deduplicated_entities = deduplicate_entities_advanced(all_entities_list)
-    logger.info(f"Deduplication: {len(all_entities_list)} entities → {len(deduplicated_entities)} entities")
+    # Apply advanced deduplication only if ENABLE_ENTITY_DEDUP is true
+    enable_entity_dedup = os.getenv("ENABLE_ENTITY_DEDUP", "true").lower() == "true"
+    
+    if enable_entity_dedup:
+        deduplicated_entities = deduplicate_entities_advanced(all_entities_list)
+        logger.info(f"Deduplication: {len(all_entities_list)} entities → {len(deduplicated_entities)} entities")
+    else:
+        deduplicated_entities = all_entities_list
+        logger.info(f"Deduplication disabled: keeping all {len(all_entities_list)} entities")
     
     # Rebuild all_nodes from deduplicated entities
     all_nodes = defaultdict(list)
