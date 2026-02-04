@@ -190,6 +190,41 @@ class StreamChunkResponse(BaseModel):
     )
 
 
+class FilterDataRequest(BaseModel):
+    """Request model for filtered entity data retrieval"""
+
+    query: str = Field(
+        default="",
+        description="Search query for semantic filtering (can be empty for type-only filtering)",
+    )
+
+    filter_config: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Entity filter configuration. Supports: entity_type (list), entity_name (list), has_property (list)",
+    )
+
+    top_k: Optional[int] = Field(
+        ge=1,
+        default=10,
+        description="Maximum number of entities to retrieve",
+    )
+
+    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = Field(
+        default="local",
+        description="Query mode for filtering",
+    )
+
+    only_need_context: Optional[bool] = Field(
+        default=False,
+        description="If True, only returns context without generating response",
+    )
+
+    include_references: Optional[bool] = Field(
+        default=True,
+        description="If True, includes reference information in response",
+    )
+
+
 def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
     combined_auth = get_combined_auth_dependency(api_key)
 
@@ -1155,5 +1190,213 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         except Exception as e:
             logger.error(f"Error processing data query: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post(
+        "/query/filter_data",
+        response_model=QueryDataResponse,
+        dependencies=[Depends(combined_auth)],
+        responses={
+            200: {
+                "description": "Successful filtered data retrieval",
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "status": {"type": "string"},
+                                "message": {"type": "string"},
+                                "data": {
+                                    "type": "object",
+                                    "properties": {
+                                        "entities": {
+                                            "type": "array",
+                                            "description": "Filtered entities matching filter_config",
+                                        },
+                                        "chunks": {
+                                            "type": "array",
+                                            "description": "Text chunks associated with filtered entities",
+                                        },
+                                        "references": {
+                                            "type": "array",
+                                            "description": "Reference information",
+                                        },
+                                    },
+                                },
+                                "metadata": {
+                                    "type": "object",
+                                    "description": "Filtering metadata",
+                                },
+                            },
+                        },
+                    }
+                },
+            },
+            400: {
+                "description": "Invalid filter configuration",
+            },
+            500: {
+                "description": "Internal server error during filtering",
+            },
+        },
+    )
+    async def filter_query_data(request: FilterDataRequest):
+        """
+        Filter entities by type and retrieve associated data.
+
+        This endpoint allows you to filter entities by type and optionally search
+        semantically within the filtered subset.
+
+        **Filter Configuration:**
+        ```json
+        {
+            "entity_type": ["component", "equipment"],
+            "entity_name": ["Bearing", "Pump"],
+            "has_property": ["function"]
+        }
+        ```
+
+        All filters use OR logic within the same key, AND logic between keys.
+
+        **Usage Examples:**
+
+        Filter by entity type only:
+        ```json
+        {
+            "filter_config": {"entity_type": ["equipment"]},
+            "top_k": 10
+        }
+        ```
+
+        Filter by type and search semantically:
+        ```json
+        {
+            "query": "compression and pressure",
+            "filter_config": {"entity_type": ["equipment"]},
+            "top_k": 5
+        }
+        ```
+
+        Filter by multiple criteria:
+        ```json
+        {
+            "filter_config": {
+                "entity_type": ["component", "equipment"],
+                "has_property": ["function"]
+            },
+            "top_k": 20
+        }
+        ```
+
+        Args:
+            request (FilterDataRequest): Filter configuration with optional query
+
+        Returns:
+            QueryDataResponse: Filtered entities, chunks, and references
+
+        Raises:
+            HTTPException:
+                - 400: Invalid filter configuration
+                - 500: Processing error
+        """
+        try:
+            # Get all data first using the raw query (empty or provided)
+            param = QueryRequest(
+                query=request.query if request.query else "all entities",
+                mode=request.mode,
+                top_k=request.top_k,
+                only_need_context=request.only_need_context,
+            ).to_query_params(False)
+
+            # Get the data from RAG
+            response = await rag.aquery_data(request.query if request.query else "", param=param)
+
+            if not isinstance(response, dict):
+                return QueryDataResponse(
+                    status="failure",
+                    message="Invalid response type",
+                    data={},
+                )
+
+            # Extract and filter entities based on filter_config
+            all_entities = response.get("data", {}).get("entities", [])
+            filtered_entities = all_entities
+
+            if request.filter_config:
+                filtered_entities = _apply_entity_filters(
+                    all_entities,
+                    request.filter_config
+                )
+
+            # Build filtered response
+            filtered_data = response.get("data", {})
+            filtered_data["entities"] = filtered_entities
+
+            # Only keep chunks that relate to filtered entities
+            if filtered_entities:
+                entity_names = {e.get("entity_name") for e in filtered_entities}
+                all_chunks = response.get("data", {}).get("chunks", [])
+                filtered_chunks = [
+                    c for c in all_chunks
+                    if any(
+                        name.lower() in c.get("content", "").lower()
+                        for name in entity_names
+                    )
+                ]
+                filtered_data["chunks"] = filtered_chunks
+
+            # Update response with filtered data
+            response["data"] = filtered_data
+            response["message"] = f"Retrieved {len(filtered_entities)} filtered entities"
+
+            return QueryDataResponse(**response)
+
+        except Exception as e:
+            logger.error(f"Error processing filter query: {str(e)}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    def _apply_entity_filters(
+        entities: List[Dict[str, Any]],
+        filter_config: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """
+        Apply filters to entities based on filter_config.
+
+        Filter logic:
+        - Within same key: OR logic (if entity_type matches ANY value, include it)
+        - Between keys: AND logic (entity must match ALL provided filter keys)
+        """
+        if not filter_config:
+            return entities
+
+        filtered = entities
+
+        # Filter by entity_type
+        if "entity_type" in filter_config:
+            allowed_types = filter_config["entity_type"]
+            filtered = [
+                e for e in filtered
+                if e.get("entity_type", "").lower() in [t.lower() for t in allowed_types]
+            ]
+
+        # Filter by entity_name
+        if "entity_name" in filter_config:
+            allowed_names = filter_config["entity_name"]
+            filtered = [
+                e for e in filtered
+                if e.get("entity_name", "").lower() in [n.lower() for n in allowed_names]
+            ]
+
+        # Filter by has_property (must have the property with non-empty value)
+        if "has_property" in filter_config:
+            required_properties = filter_config["has_property"]
+            filtered = [
+                e for e in filtered
+                if all(
+                    e.get(prop) or e.get(prop, "").strip()
+                    for prop in required_properties
+                )
+            ]
+
+        return filtered
 
     return router
