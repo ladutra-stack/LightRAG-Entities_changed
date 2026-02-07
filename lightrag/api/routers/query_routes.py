@@ -200,7 +200,7 @@ class FilterDataRequest(BaseModel):
 
     filter_config: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="Entity filter configuration. Supports: entity_id (list - PRIMARY), entity_name (list), entity_type (list), has_property (list)",
+        description="Entity filter configuration. Supports: entity_labels (list - PRIMARY, from graph/label/list), entity_name (list), entity_type (list), has_property (list)",
     )
 
     top_k: Optional[int] = Field(
@@ -1197,6 +1197,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     status="failure",
                     message="Invalid response type",
                     data={},
+                    metadata={},
                 )
         except Exception as e:
             logger.error(f"Error processing data query: {str(e)}", exc_info=True)
@@ -1310,111 +1311,49 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 - 500: Processing error
         """
         try:
-            # Build QueryRequest with reranking parameters
-            query_request_data = {
-                "query": request.query if request.query else "all entities",
-                "mode": request.mode,
-                "top_k": request.top_k,
-                "only_need_context": request.only_need_context,
-            }
-            
-            # Add optional reranking parameters if provided
-            if request.chunk_top_k is not None:
-                query_request_data["chunk_top_k"] = request.chunk_top_k
-            if request.enable_rerank is not None:
-                query_request_data["enable_rerank"] = request.enable_rerank
-            
-            param = QueryRequest(**query_request_data).to_query_params(False)
+            # Build QueryParam with reranking parameters
+            param = QueryParam(
+                mode=request.mode,
+                top_k=request.top_k if request.top_k is not None else 10,
+                chunk_top_k=request.chunk_top_k if request.chunk_top_k is not None else (request.top_k if request.top_k is not None else 10),
+                enable_rerank=request.enable_rerank or True,
+            )
 
-            # Get the data from RAG
-            response = await rag.aquery_data(request.query if request.query else "", param=param)
+            # Call afilter_data with filter_config
+            response = await rag.afilter_data(
+                query=request.query or "",
+                filter_config=request.filter_config or {},
+                param=param
+            )
 
             if not isinstance(response, dict):
                 return QueryDataResponse(
                     status="failure",
                     message="Invalid response type",
                     data={},
+                    metadata={},
                 )
 
-            # Extract entities from response
-            all_entities = response.get("data", {}).get("entities", [])
-            filtered_entities = all_entities
-
-            # Apply filter_config to entities
+            # Format response to match QueryDataResponse structure
+            # afilter_data returns: {status, message, chunks, metadata}
+            # QueryDataResponse expects: {status, message, data: {entities, chunks, ...}, metadata}
+            # Extract entity_labels (primary) or entity_id (fallback) from filter_config
+            entity_labels = []
             if request.filter_config:
-                filtered_entities = _apply_entity_filters(
-                    all_entities,
-                    request.filter_config
-                )
-                
-                logger.debug(
-                    f"Entity filtering: {len(all_entities)} total → "
-                    f"{len(filtered_entities)} filtered "
-                    f"(filters: {list(request.filter_config.keys())})"
-                )
+                entity_labels = request.filter_config.get("entity_labels") or request.filter_config.get("entity_id") or []
+            
+            response_data = {
+                "entities": entity_labels,
+                "chunks": response.get("chunks", []),
+                "relationships": [],
+                "references": [],
+            }
 
-
-            # STEP 1: Recupera TODOS os chunks vinculados às entidades filtradas e agrupa em um único grupo (deduplicação)
-            if filtered_entities:
-                all_chunks = response.get("data", {}).get("chunks", [])
-                # Coleta todos os chunks que têm relação com QUALQUER entidade filtrada
-                # Associações originais não importam após deduplicação
-                chunks_dict = {}
-                # Considera chunks relacionados por entity_id OU entity_name
-                entity_ids = {e.get("entity_id") or e.get("id") for e in filtered_entities}
-                entity_names = {e.get("entity_name") for e in filtered_entities}
-                for chunk in all_chunks:
-                    chunk_id = chunk.get("chunk_id") or chunk.get("id") or id(chunk)
-                    # Checa se chunk está vinculado a alguma entidade filtrada
-                    # Pode ser por campo source_entity, entity_id, ou menção no conteúdo
-                    linked = False
-                    if "source_entity" in chunk and chunk["source_entity"] in entity_names:
-                        linked = True
-                    elif "entity_id" in chunk and chunk["entity_id"] in entity_ids:
-                        linked = True
-                    elif any(name and name.lower() in chunk.get("content", "").lower() for name in entity_names):
-                        linked = True
-                    if linked and chunk_id not in chunks_dict:
-                        chunks_dict[chunk_id] = chunk
-                logger.debug(
-                    f"Chunk collection: {len(all_chunks)} total → {len(chunks_dict)} chunks vinculados às entidades filtradas (deduplicados)"
-                )
-                # STEP 2: Seleciona os chunk_top_k mais relevantes semanticamente
-                deduped_chunks = list(chunks_dict.values())
-                deduped_chunks.sort(key=lambda c: float(c.get("similarity_score", 0.0)), reverse=True)
-                chunk_limit = request.chunk_top_k if request.chunk_top_k is not None else len(deduped_chunks)
-                selected_chunks = deduped_chunks[:chunk_limit]
-                logger.debug(
-                    f"Semantic ranking: Selecionados {len(selected_chunks)} chunks (chunk_top_k={chunk_limit})"
-                )
-                # STEP 3: Passa pelo rerank se habilitado e retorna top_k
-                final_chunks = selected_chunks
-                if request.enable_rerank and selected_chunks:
-                    # Aqui você pode chamar a função de rerank real se existir
-                    logger.debug(
-                        f"Reranking habilitado: reordenando {len(selected_chunks)} chunks e selecionando top {request.top_k}"
-                    )
-                    # Exemplo: final_chunks = rerank_chunks(selected_chunks, request.top_k)
-                    final_chunks = selected_chunks[:request.top_k]
-                else:
-                    final_chunks = selected_chunks[:request.top_k]
-                # Prepara resposta
-                filtered_data = response.get("data", {})
-                filtered_data["entities"] = filtered_entities
-                filtered_data["chunks"] = final_chunks
-            else:
-                # Nenhuma entidade correspondeu ao filtro
-                filtered_data = response.get("data", {})
-                filtered_data["entities"] = []
-                filtered_data["chunks"] = []
-                logger.debug("Nenhuma entidade correspondeu ao filtro")
-
-            # Atualiza resposta
-            response["data"] = filtered_data
+            # Update response structure for QueryDataResponse
+            response["data"] = response_data
             response["message"] = (
-                f"Recuperados {len(filtered_entities)} entidades filtradas, "
-                f"{len(filtered_data.get('chunks', []))} chunks relacionados "
-                f"({f'reranked to top {request.top_k}' if request.enable_rerank else 'no reranking'})"
+                f"Recuperados {len(response_data['chunks'])} chunks relevantes "
+                f"({f'reranked to top {request.chunk_top_k}' if request.enable_rerank else 'no reranking'})"
             )
 
             return QueryDataResponse(**response)
@@ -1422,65 +1361,5 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         except Exception as e:
             logger.error(f"Error processing filter query: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
-
-    def _apply_entity_filters(
-        entities: List[Dict[str, Any]],
-        filter_config: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
-        """
-        Apply filters to entities based on filter_config.
-
-        Filter priority (highest to lowest):
-        1. entity_id - Direct ID matching (fastest, most precise)
-        2. entity_name - Exact name matching
-        3. entity_type - Type classification
-        4. has_property - Property presence check
-
-        Filter logic:
-        - Within same key: OR logic (if entity matches ANY value, include it)
-        - Between keys: AND logic (entity must match ALL provided filter keys)
-        """
-        if not filter_config:
-            return entities
-
-        filtered = entities
-
-        # PRIMARY FILTER: Filter by entity_id (highest priority)
-        if "entity_id" in filter_config:
-            allowed_ids = filter_config["entity_id"]
-            filtered = [
-                e for e in filtered
-                if e.get("entity_id") in allowed_ids
-                or e.get("id") in allowed_ids  # Some systems may use "id" instead
-            ]
-
-        # SECONDARY FILTER: Filter by entity_name
-        if "entity_name" in filter_config:
-            allowed_names = filter_config["entity_name"]
-            filtered = [
-                e for e in filtered
-                if e.get("entity_name", "").lower() in [n.lower() for n in allowed_names]
-            ]
-
-        # Filter by entity_type
-        if "entity_type" in filter_config:
-            allowed_types = filter_config["entity_type"]
-            filtered = [
-                e for e in filtered
-                if e.get("entity_type", "").lower() in [t.lower() for t in allowed_types]
-            ]
-
-        # Filter by has_property (must have the property with non-empty value)
-        if "has_property" in filter_config:
-            required_properties = filter_config["has_property"]
-            filtered = [
-                e for e in filtered
-                if all(
-                    e.get(prop) or e.get(prop, "").strip()
-                    for prop in required_properties
-                )
-            ]
-
-        return filtered
 
     return router

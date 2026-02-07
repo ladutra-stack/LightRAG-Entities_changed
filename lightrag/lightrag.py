@@ -3084,6 +3084,11 @@ class LightRAG:
                             if required_prop not in entity:
                                 matches_all_filters = False
                                 break
+                    elif filter_key == "entity_labels" or filter_key == "entity_id":
+                        # OR logic within same filter - match entity_id directly
+                        # Support both "entity_labels" (primary) and "entity_id" (fallback) for compatibility
+                        if entity.get("entity_id") not in filter_values and entity.get("id") not in filter_values:
+                            matches_all_filters = False
                     elif filter_key == "entity_name":
                         # OR logic within same filter
                         if entity.get("entity_id") not in filter_values:
@@ -3255,16 +3260,17 @@ class LightRAG:
                 final_chunks = chunks_with_content
 
             # ============ STEP 5: Reranking (if enabled) ============
-            top_k = param.chunk_top_k or param.top_k
+            # Use chunk_top_k to limit chunks (NOT top_k, which is ignored in filter_data)
+            chunk_limit = param.chunk_top_k or param.top_k
             reranking_applied = False
 
             if param.enable_rerank and self.rerank_model_func and semantic_search_applied:
                 try:
                     logger.info(
-                        f"Applying reranking to top {min(top_k * 2, len(final_chunks))} chunks"
+                        f"Applying reranking to top {min(chunk_limit * 2, len(final_chunks))} chunks"
                     )
 
-                    chunks_to_rerank = final_chunks[: min(top_k * 2, len(final_chunks))]
+                    chunks_to_rerank = final_chunks[: min(chunk_limit * 2, len(final_chunks))]
                     documents = [
                         {
                             "text": chunk["content"],
@@ -3275,7 +3281,7 @@ class LightRAG:
 
                     # Call rerank function
                     rerank_results = await self.rerank_model_func(
-                        query=query, documents=documents, top_k=min(top_k, len(documents))
+                        query=query, documents=documents, top_k=min(chunk_limit, len(documents))
                     )
 
                     # Reorder based on rerank results
@@ -3296,10 +3302,10 @@ class LightRAG:
                     logger.warning(
                         f"Reranking failed: {e}, using similarity scores"
                     )
-                    final_chunks = final_chunks[:top_k]
+                    final_chunks = final_chunks[:chunk_limit]
                     reranking_applied = False
             else:
-                final_chunks = final_chunks[:top_k]
+                final_chunks = final_chunks[:chunk_limit]
 
             # ============ STEP 6: Format results ============
             result_chunks = [
