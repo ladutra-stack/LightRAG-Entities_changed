@@ -157,6 +157,15 @@ class LightRAG:
     workspace: str = field(default_factory=lambda: os.getenv("WORKSPACE", ""))
     """Workspace for data isolation. Defaults to empty string if WORKSPACE environment variable is not set."""
 
+    # Multi-graph Support (Phase 4)
+    # ---
+
+    graph_id: str | None = field(default=None)
+    """Optional graph ID for multi-graph support. If provided, working_dir will be resolved via graph_manager."""
+
+    graph_manager: object = field(default=None)
+    """Optional GraphManager instance for multi-graph context switching. Required if graph_id is provided."""
+
     # ---
     # TODO: Deprecated, use setup_logger in utils.py instead
     log_level: int | None = field(default=None)
@@ -467,6 +476,37 @@ class LightRAG:
             delattr(self, "log_file_path")
 
         initialize_share_data()
+
+        # Phase 4: Resolve working_dir if graph_id is provided
+        if self.graph_id is not None:
+            # Validate and clean graph_id
+            graph_id_clean = str(self.graph_id).strip()
+            if not graph_id_clean:
+                raise ValueError(
+                    "graph_id cannot be empty or whitespace-only"
+                )
+            
+            if not self.graph_manager:
+                raise ValueError(
+                    "graph_manager must be provided when graph_id is specified"
+                )
+            
+            # Get graph-specific working directory
+            graph_working_dir = self.graph_manager.get_graph_working_dir(
+                graph_id_clean
+            )
+            if not graph_working_dir:
+                raise ValueError(
+                    f"Graph '{graph_id_clean}' not found in graph_manager"
+                )
+            
+            logger.info(
+                f"Using graph-specific working_dir for graph '{graph_id_clean}': {graph_working_dir}"
+            )
+            # Override working_dir with graph-specific one (convert Path to str)
+            self.working_dir = str(graph_working_dir)
+            # Store cleaned graph_id
+            self.graph_id = graph_id_clean
 
         if not os.path.exists(self.working_dir):
             logger.info(f"Creating working directory {self.working_dir}")

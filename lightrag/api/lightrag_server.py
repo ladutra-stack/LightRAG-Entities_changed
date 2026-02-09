@@ -50,8 +50,23 @@ from lightrag.api.routers.document_routes import (
     create_document_routes,
 )
 from lightrag.api.routers.query_routes import create_query_routes
-from lightrag.api.routers.graph_routes import create_graph_routes
+from lightrag.api.routers.graph_routes import create_graph_routes, create_graph_manager_routes
 from lightrag.api.routers.ollama_api import OllamaAPI
+from lightrag.api.rag_pool import RAGPool
+from lightrag.api.config_backup_replication import (
+    BackupReplicationConfig,
+    init_config,
+)
+from lightrag.api.routers.backup_replication_factory import (
+    create_backup_replication_managers,
+    create_backup_replication_router,
+    can_initialize_backup_replication,
+    get_config_summary,
+)
+from lightrag.api.routers.monitoring_routes import router as monitoring_router
+from lightrag.monitoring.prometheus_metrics import MetricsRegistry
+from lightrag.monitoring.metrics_collector import init_metrics_collector, CollectorConfig
+from lightrag.graph_manager import GraphManager
 
 from lightrag.utils import logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
@@ -72,6 +87,11 @@ load_dotenv(dotenv_path=".env", override=False)
 
 webui_title = os.getenv("WEBUI_TITLE")
 webui_description = os.getenv("WEBUI_DESCRIPTION")
+
+# Initialize Backup/Replication/Recovery configuration
+br_config = BackupReplicationConfig.from_env()
+init_config(br_config)
+logger.info(f"Backup/Replication/Recovery Configuration loaded: {get_config_summary()}")
 
 # Initialize config parser
 config = configparser.ConfigParser()
@@ -1087,16 +1107,133 @@ def create_app(args):
         logger.error(f"Failed to initialize LightRAG: {e}")
         raise
 
+    # Initialize GraphManager for multi-graph support
+    try:
+        graph_manager = GraphManager(base_working_dir=args.working_dir)
+        logger.info(f"GraphManager initialized with {len(graph_manager.list_graphs())} graph(s)")
+    except Exception as e:
+        logger.error(f"Failed to initialize GraphManager: {e}")
+        raise
+
+    # Initialize RAGPool for per-graph RAG instances (Phase 4)
+    try:
+        # Prepare base RAG configuration (without working_dir, graph_id, graph_manager)
+        base_rag_config = {
+            "workspace": args.workspace,
+            "llm_model_func": create_llm_model_func(args.llm_binding),
+            "llm_model_name": args.llm_model,
+            "llm_model_max_async": args.max_async,
+            "summary_max_tokens": args.summary_max_tokens,
+            "summary_context_size": args.summary_context_size,
+            "chunk_token_size": int(args.chunk_size),
+            "chunk_overlap_token_size": int(args.chunk_overlap_size),
+            "llm_model_kwargs": create_llm_model_kwargs(
+                args.llm_binding, args, llm_timeout
+            ),
+            "embedding_func": embedding_func,
+            "default_llm_timeout": llm_timeout,
+            "default_embedding_timeout": embedding_timeout,
+            "kv_storage": args.kv_storage,
+            "graph_storage": args.graph_storage,
+            "vector_storage": args.vector_storage,
+            "doc_status_storage": args.doc_status_storage,
+            "vector_db_storage_cls_kwargs": {
+                "cosine_better_than_threshold": args.cosine_threshold
+            },
+            "enable_llm_cache_for_entity_extract": args.enable_llm_cache_for_extract,
+            "enable_llm_cache": args.enable_llm_cache,
+            "rerank_model_func": rerank_model_func,
+            "max_parallel_insert": args.max_parallel_insert,
+            "max_graph_nodes": args.max_graph_nodes,
+            "addon_params": {
+                "language": args.summary_language,
+                "entity_types": args.entity_types,
+            },
+            "ollama_server_infos": ollama_server_infos,
+        }
+        
+        rag_pool = RAGPool(base_rag_config=base_rag_config, graph_manager=graph_manager)
+        logger.info("RAGPool initialized for multi-graph support (Phase 4)")
+    except Exception as e:
+        logger.error(f"Failed to initialize RAGPool: {e}")
+        raise
+
+    # Initialize Backup/Replication/Recovery managers
+    backup_manager = None
+    replication_manager = None
+    recovery_manager = None
+    
+    if can_initialize_backup_replication():
+        try:
+            backup_manager, replication_manager, recovery_manager = (
+                create_backup_replication_managers(br_config)
+            )
+            logger.info("Backup/Replication/Recovery managers initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize Backup/Replication/Recovery: {e}")
+            # Continue without these features
+    else:
+        logger.info("Backup/Replication/Recovery features are disabled")
+
+    # Initialize Monitoring & Analytics (Phase 5C)
+    metrics_collector = None
+    if br_config.metrics_enabled:
+        try:
+            metrics_registry = MetricsRegistry()
+            from lightrag.api.models_recovery_db import get_db_manager
+            db_manager_monitoring = get_db_manager() if backup_manager else None
+            
+            collector_config = CollectorConfig(
+                enabled=True,
+                collection_interval_seconds=br_config.metrics_collection_interval_seconds,
+                retention_days=90,
+            )
+            
+            metrics_collector = init_metrics_collector(
+                metrics_registry=metrics_registry,
+                db_manager=db_manager_monitoring,
+                config=collector_config,
+                start=True,
+            )
+            logger.info("Metrics collector initialized and started")
+        except Exception as e:
+            logger.warning(f"Failed to initialize metrics collector: {e}")
+            # Continue without monitoring features
+    else:
+        logger.info("Metrics collection is disabled")
+
     # Add routes
     app.include_router(
         create_document_routes(
             rag,
             doc_manager,
             api_key,
+            graph_manager,
+            rag_pool,
         )
     )
-    app.include_router(create_query_routes(rag, api_key, args.top_k))
+    app.include_router(create_query_routes(rag, api_key, args.top_k, graph_manager, rag_pool))
     app.include_router(create_graph_routes(rag, api_key))
+    app.include_router(create_graph_manager_routes(graph_manager, api_key))
+
+    # Add Backup/Replication/Recovery routes if managers initialized
+    if backup_manager and replication_manager and recovery_manager:
+        try:
+            br_router = create_backup_replication_router(
+                backup_manager, replication_manager, recovery_manager, api_key
+            )
+            app.include_router(br_router, prefix="/api/backup", tags=["Backup/Replication/Recovery"])
+            logger.info("Backup/Replication/Recovery API routes registered")
+        except Exception as e:
+            logger.warning(f"Failed to register Backup/Replication/Recovery routes: {e}")
+
+    # Add Monitoring & Analytics routes if collector initialized
+    if metrics_collector:
+        try:
+            app.include_router(monitoring_router, tags=["Monitoring & Analytics"])
+            logger.info("Monitoring & Analytics API routes registered")
+        except Exception as e:
+            logger.warning(f"Failed to register Monitoring routes: {e}")
 
     # Add Ollama API routes
     ollama_api = OllamaAPI(rag, top_k=args.top_k, api_key=api_key)

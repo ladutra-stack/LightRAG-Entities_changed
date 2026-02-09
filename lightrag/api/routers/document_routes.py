@@ -16,6 +16,7 @@ from fastapi import (
     BackgroundTasks,
     Depends,
     File,
+    Form,
     HTTPException,
     UploadFile,
 )
@@ -212,6 +213,8 @@ class InsertTextRequest(BaseModel):
     Attributes:
         text: The text content to be inserted into the RAG system
         file_source: Source of the text (optional)
+        graph_id: MANDATORY - The ID of the knowledge graph to insert into
+        create: MANDATORY - Whether to auto-create the graph if it doesn't exist
     """
 
     text: str = Field(
@@ -219,6 +222,12 @@ class InsertTextRequest(BaseModel):
         description="The text to insert",
     )
     file_source: str = Field(default=None, min_length=0, description="File Source")
+    graph_id: str = Field(
+        description="MANDATORY - The ID of the knowledge graph to insert into"
+    )
+    create: bool = Field(
+        description="MANDATORY - Whether to auto-create the graph if it doesn't exist"
+    )
 
     @field_validator("text", mode="after")
     @classmethod
@@ -235,6 +244,8 @@ class InsertTextRequest(BaseModel):
             "example": {
                 "text": "This is a sample text to be inserted into the RAG system.",
                 "file_source": "Source of the text (optional)",
+                "graph_id": "my_graph_1234567890",
+                "create": False,
             }
         }
 
@@ -245,6 +256,8 @@ class InsertTextsRequest(BaseModel):
     Attributes:
         texts: List of text contents to be inserted into the RAG system
         file_sources: Sources of the texts (optional)
+        graph_id: MANDATORY - The ID of the knowledge graph to insert into
+        create: MANDATORY - Whether to auto-create the graph if it doesn't exist
     """
 
     texts: list[str] = Field(
@@ -253,6 +266,12 @@ class InsertTextsRequest(BaseModel):
     )
     file_sources: list[str] = Field(
         default=None, min_length=0, description="Sources of the texts"
+    )
+    graph_id: str = Field(
+        description="MANDATORY - The ID of the knowledge graph to insert into"
+    )
+    create: bool = Field(
+        description="MANDATORY - Whether to auto-create the graph if it doesn't exist"
     )
 
     @field_validator("texts", mode="after")
@@ -275,6 +294,8 @@ class InsertTextsRequest(BaseModel):
                 "file_sources": [
                     "First file source (optional)",
                 ],
+                "graph_id": "my_graph_1234567890",
+                "create": False,
             }
         }
 
@@ -286,6 +307,8 @@ class InsertResponse(BaseModel):
         status: Status of the operation (success, duplicated, partial_success, failure)
         message: Detailed message describing the operation result
         track_id: Tracking ID for monitoring processing status
+        graph_id: (Optional) ID of the knowledge graph where document was inserted
+        graph_created: (Optional) Whether a new graph was created for this insertion
     """
 
     status: Literal["success", "duplicated", "partial_success", "failure"] = Field(
@@ -293,6 +316,12 @@ class InsertResponse(BaseModel):
     )
     message: str = Field(description="Message describing the operation result")
     track_id: str = Field(description="Tracking ID for monitoring processing status")
+    graph_id: Optional[str] = Field(
+        None, description="ID of the knowledge graph where document was inserted (multi-graph only)"
+    )
+    graph_created: Optional[bool] = Field(
+        None, description="Whether a new graph was created for this insertion (multi-graph only)"
+    )
 
     class Config:
         json_schema_extra = {
@@ -300,6 +329,8 @@ class InsertResponse(BaseModel):
                 "status": "success",
                 "message": "File 'document.pdf' uploaded successfully. Processing will continue in background.",
                 "track_id": "upload_20250729_170612_abc123",
+                "graph_id": "my_graph_1234567890",
+                "graph_created": False,
             }
         }
 
@@ -2040,7 +2071,11 @@ async def background_delete_documents(
 
 
 def create_document_routes(
-    rag: LightRAG, doc_manager: DocumentManager, api_key: Optional[str] = None
+    rag: LightRAG,
+    doc_manager: DocumentManager,
+    api_key: Optional[str] = None,
+    graph_manager=None,
+    rag_pool=None,
 ):
     # Create combined auth dependency for document routes
     combined_auth = get_combined_auth_dependency(api_key)
@@ -2074,7 +2109,10 @@ def create_document_routes(
         "/upload", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def upload_to_input_dir(
-        background_tasks: BackgroundTasks, file: UploadFile = File(...)
+        background_tasks: BackgroundTasks,
+        file: UploadFile = File(...),
+        graph_id: str = Form(...),
+        create: bool = Form(...),
     ):
         """
         Upload a file to the input directory and index it.
@@ -2082,6 +2120,16 @@ def create_document_routes(
         This API endpoint accepts a file through an HTTP POST request, checks if the
         uploaded file is of a supported type, saves it in the specified input directory,
         indexes it for retrieval, and returns a success status with relevant details.
+
+        **Parameters:**
+        - graph_id (str): MANDATORY - The ID of the knowledge graph to insert into
+        - create (bool): MANDATORY - Whether to auto-create the graph if it doesn't exist
+
+        **Graph Handling:**
+        - If graph_id exists and create=true: Returns 400 (conflict)
+        - If graph_id doesn't exist and create=false: Returns 400 (graph not found)
+        - If graph_id doesn't exist and create=true: Automatically creates the graph
+        - If graph_id exists and create=false: Uses existing graph (normal case)
 
         **File Size Limit:**
         - Configurable via `MAX_UPLOAD_SIZE` environment variable (default: 100MB)
@@ -2118,16 +2166,59 @@ def create_document_routes(
         Args:
             background_tasks: FastAPI BackgroundTasks for async processing
             file (UploadFile): The file to be uploaded. It must have an allowed extension.
+            graph_id (str): MANDATORY - The knowledge graph ID
+            create (bool): MANDATORY - Auto-create graph if missing
 
         Returns:
             InsertResponse: A response object containing the upload status and a message.
                 - status="success": File accepted and queued for processing
                 - status="duplicated": Filename already exists (see track_id for existing document)
+                - Contains graph_id and graph_created in response
 
         Raises:
-            HTTPException: If the file type is not supported (400), file too large (413), or other errors occur (500).
+            HTTPException: If graph_id not provided (400), graph doesn't exist and create=false (400),
+                         file type not supported (400), file too large (413), or other errors occur (500).
         """
         try:
+            # Validate graph_id parameter
+            if not graph_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="graph_id parameter is MANDATORY",
+                )
+
+            graph_created = False
+
+            # Handle graph_manager for multi-graph support
+            if graph_manager:
+                graph_exists = graph_manager.graph_exists(graph_id)
+
+                if not graph_exists and not create:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Graph '{graph_id}' does not exist and create=false. Set create=true to auto-create.",
+                    )
+
+                if not graph_exists and create:
+                    # Auto-create the graph
+                    try:
+                        graph_manager.create_graph(
+                            name=graph_id,
+                            description=f"Auto-created graph from document upload",
+                            graph_id=graph_id,
+                        )
+                        graph_created = True
+                        logger.info(f"Auto-created graph '{graph_id}' for document upload")
+                    except Exception as e:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Failed to create graph '{graph_id}': {str(e)}",
+                        )
+            else:
+                # If no graph_manager, just log a warning about multi-graph parameters
+                logger.warning(
+                    f"GraphManager not available, ignoring multi-graph parameters: graph_id={graph_id}, create={create}"
+                )
             # Sanitize filename to prevent Path Traversal attacks
             safe_filename = sanitize_filename(file.filename, doc_manager.input_dir)
 
@@ -2169,6 +2260,8 @@ def create_document_routes(
                     status="duplicated",
                     message=f"File '{safe_filename}' already exists in document storage (Status: {status}).",
                     track_id=existing_track_id,
+                    graph_id=graph_id,
+                    graph_created=graph_created,
                 )
 
             file_path = doc_manager.input_dir / safe_filename
@@ -2178,6 +2271,8 @@ def create_document_routes(
                     status="duplicated",
                     message=f"File '{safe_filename}' already exists in the input directory.",
                     track_id="",
+                    graph_id=graph_id,
+                    graph_created=graph_created,
                 )
 
             # Async streaming write with size check
@@ -2221,13 +2316,21 @@ def create_document_routes(
 
             track_id = generate_track_id("upload")
 
+            # Phase 4: Use graph-specific RAG if rag_pool is available
+            if rag_pool:
+                upload_rag = rag_pool.get_rag_sync(graph_id)
+            else:
+                upload_rag = rag
+
             # Add to background tasks and get track_id
-            background_tasks.add_task(pipeline_index_file, rag, file_path, track_id)
+            background_tasks.add_task(pipeline_index_file, upload_rag, file_path, track_id)
 
             return InsertResponse(
                 status="success",
                 message=f"File '{safe_filename}' uploaded successfully. Processing will continue in background.",
                 track_id=track_id,
+                graph_id=graph_id,
+                graph_created=graph_created,
             )
 
         except HTTPException:
@@ -2250,6 +2353,16 @@ def create_document_routes(
         This endpoint allows you to insert text data into the RAG system for later retrieval
         and use in generating responses.
 
+        **Parameters:**
+        - graph_id (str): MANDATORY - The ID of the knowledge graph to insert into
+        - create (bool): MANDATORY - Whether to auto-create the graph if it doesn't exist
+
+        **Graph Handling:**
+        - If graph_id exists and create=true: Returns 400 (conflict)
+        - If graph_id doesn't exist and create=false: Returns 400 (graph not found)
+        - If graph_id doesn't exist and create=true: Automatically creates the graph
+        - If graph_id exists and create=false: Uses existing graph (normal case)
+
         Args:
             request (InsertTextRequest): The request body containing the text to be inserted.
             background_tasks: FastAPI BackgroundTasks for async processing
@@ -2258,9 +2371,50 @@ def create_document_routes(
             InsertResponse: A response object containing the status of the operation.
 
         Raises:
-            HTTPException: If an error occurs during text processing (500).
+            HTTPException: If graph_id not provided (400), graph doesn't exist and create=false (400),
+                         or other errors occur (500).
         """
         try:
+            # Validate graph_id parameter
+            if not request.graph_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="graph_id parameter is MANDATORY",
+                )
+
+            graph_created = False
+
+            # Handle graph_manager for multi-graph support
+            if graph_manager:
+                graph_exists = graph_manager.graph_exists(request.graph_id)
+
+                if not graph_exists and not request.create:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Graph '{request.graph_id}' does not exist and create=false. Set create=true to auto-create.",
+                    )
+
+                if not graph_exists and request.create:
+                    # Auto-create the graph
+                    try:
+                        graph_manager.create_graph(
+                            name=request.graph_id,
+                            description=f"Auto-created graph from text insertion",
+                            graph_id=request.graph_id,
+                        )
+                        graph_created = True
+                        logger.info(f"Auto-created graph '{request.graph_id}' for text insertion")
+                    except Exception as e:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Failed to create graph '{request.graph_id}': {str(e)}",
+                        )
+            else:
+                # If no graph_manager, just log a warning about multi-graph parameters
+                logger.warning(
+                    f"GraphManager not available, ignoring multi-graph parameters: graph_id={request.graph_id}, create={request.create}"
+                )
+
             # Check if file_source already exists in doc_status storage
             if (
                 request.file_source
@@ -2279,6 +2433,8 @@ def create_document_routes(
                         status="duplicated",
                         message=f"File source '{request.file_source}' already exists in document storage (Status: {status}).",
                         track_id=existing_track_id,
+                        graph_id=request.graph_id,
+                        graph_created=graph_created,
                     )
 
             # Check if content already exists by computing content hash (doc_id)
@@ -2293,14 +2449,22 @@ def create_document_routes(
                     status="duplicated",
                     message=f"Identical content already exists in document storage (doc_id: {content_doc_id}, Status: {status}).",
                     track_id=existing_track_id,
+                    graph_id=request.graph_id,
+                    graph_created=graph_created,
                 )
 
             # Generate track_id for text insertion
             track_id = generate_track_id("insert")
 
+            # Phase 4: Use graph-specific RAG if rag_pool is available
+            if rag_pool:
+                insert_rag = await rag_pool.get_or_create_rag(request.graph_id)
+            else:
+                insert_rag = rag
+
             background_tasks.add_task(
                 pipeline_index_texts,
-                rag,
+                insert_rag,
                 [request.text],
                 file_sources=[request.file_source],
                 track_id=track_id,
@@ -2310,7 +2474,12 @@ def create_document_routes(
                 status="success",
                 message="Text successfully received. Processing will continue in background.",
                 track_id=track_id,
+                graph_id=request.graph_id,
+                graph_created=graph_created,
             )
+        except HTTPException:
+            # Re-raise HTTP exceptions (400, etc.)
+            raise
         except Exception as e:
             logger.error(f"Error /documents/text: {str(e)}")
             logger.error(traceback.format_exc())
@@ -2330,6 +2499,16 @@ def create_document_routes(
         This endpoint allows you to insert multiple text entries into the RAG system
         in a single request.
 
+        **Parameters:**
+        - graph_id (str): MANDATORY - The ID of the knowledge graph to insert into
+        - create (bool): MANDATORY - Whether to auto-create the graph if it doesn't exist
+
+        **Graph Handling:**
+        - If graph_id exists and create=true: Returns 400 (conflict)
+        - If graph_id doesn't exist and create=false: Returns 400 (graph not found)
+        - If graph_id doesn't exist and create=true: Automatically creates the graph
+        - If graph_id exists and create=false: Uses existing graph (normal case)
+
         Args:
             request (InsertTextsRequest): The request body containing the list of texts.
             background_tasks: FastAPI BackgroundTasks for async processing
@@ -2338,9 +2517,50 @@ def create_document_routes(
             InsertResponse: A response object containing the status of the operation.
 
         Raises:
-            HTTPException: If an error occurs during text processing (500).
+            HTTPException: If graph_id not provided (400), graph doesn't exist and create=false (400),
+                         or other errors occur (500).
         """
         try:
+            # Validate graph_id parameter
+            if not request.graph_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="graph_id parameter is MANDATORY",
+                )
+
+            graph_created = False
+
+            # Handle graph_manager for multi-graph support
+            if graph_manager:
+                graph_exists = graph_manager.graph_exists(request.graph_id)
+
+                if not graph_exists and not request.create:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Graph '{request.graph_id}' does not exist and create=false. Set create=true to auto-create.",
+                    )
+
+                if not graph_exists and request.create:
+                    # Auto-create the graph
+                    try:
+                        graph_manager.create_graph(
+                            name=request.graph_id,
+                            description=f"Auto-created graph from texts insertion",
+                            graph_id=request.graph_id,
+                        )
+                        graph_created = True
+                        logger.info(f"Auto-created graph '{request.graph_id}' for texts insertion")
+                    except Exception as e:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Failed to create graph '{request.graph_id}': {str(e)}",
+                        )
+            else:
+                # If no graph_manager, just log a warning about multi-graph parameters
+                logger.warning(
+                    f"GraphManager not available, ignoring multi-graph parameters: graph_id={request.graph_id}, create={request.create}"
+                )
+
             # Check if any file_sources already exist in doc_status storage
             if request.file_sources:
                 for file_source in request.file_sources:
@@ -2361,6 +2581,8 @@ def create_document_routes(
                                 status="duplicated",
                                 message=f"File source '{file_source}' already exists in document storage (Status: {status}).",
                                 track_id=existing_track_id,
+                                graph_id=request.graph_id,
+                                graph_created=graph_created,
                             )
 
             # Check if any content already exists by computing content hash (doc_id)
@@ -2376,14 +2598,22 @@ def create_document_routes(
                         status="duplicated",
                         message=f"Identical content already exists in document storage (doc_id: {content_doc_id}, Status: {status}).",
                         track_id=existing_track_id,
+                        graph_id=request.graph_id,
+                        graph_created=graph_created,
                     )
 
             # Generate track_id for texts insertion
             track_id = generate_track_id("insert")
 
+            # Phase 4: Use graph-specific RAG if rag_pool is available
+            if rag_pool:
+                insert_rag = await rag_pool.get_or_create_rag(request.graph_id)
+            else:
+                insert_rag = rag
+
             background_tasks.add_task(
                 pipeline_index_texts,
-                rag,
+                insert_rag,
                 request.texts,
                 file_sources=request.file_sources,
                 track_id=track_id,
@@ -2393,7 +2623,12 @@ def create_document_routes(
                 status="success",
                 message="Texts successfully received. Processing will continue in background.",
                 track_id=track_id,
+                graph_id=request.graph_id,
+                graph_created=graph_created,
             )
+        except HTTPException:
+            # Re-raise HTTP exceptions (400, etc.)
+            raise
         except Exception as e:
             logger.error(f"Error /documents/texts: {str(e)}")
             logger.error(traceback.format_exc())

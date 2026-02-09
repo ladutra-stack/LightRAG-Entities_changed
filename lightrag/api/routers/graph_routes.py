@@ -686,3 +686,199 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             )
 
     return router
+
+
+def create_graph_manager_routes(graph_manager, api_key: Optional[str] = None):
+    """Create routes for managing multiple knowledge graphs"""
+    from pydantic import BaseModel, Field
+
+    class CreateGraphRequest(BaseModel):
+        """Request model para criar novo graph"""
+        name: str = Field(..., description="Nome do grafo")
+        description: str = Field(default="", description="Descrição do grafo")
+        graph_id: Optional[str] = Field(None, description="ID do grafo (opcional, gerado automaticamente)")
+
+    class UpdateGraphRequest(BaseModel):
+        """Request model para atualizar graph"""
+        name: Optional[str] = Field(None, description="Novo nome")
+        description: Optional[str] = Field(None, description="Nova descrição")
+
+    mgr_router = APIRouter(tags=["graphs"], prefix="/graphs")
+    combined_auth = get_combined_auth_dependency(api_key)
+
+    @mgr_router.get("", dependencies=[Depends(combined_auth)], response_model=Dict[str, Any])
+    async def list_graphs():
+        """Listar todos os grafos disponíveis"""
+        try:
+            graphs = graph_manager.list_graphs()
+            return {
+                "status": "success",
+                "count": len(graphs),
+                "graphs": [
+                    {
+                        "id": g.id,
+                        "name": g.name,
+                        "description": g.description,
+                        "created_at": g.created_at,
+                        "updated_at": g.updated_at,
+                        "document_count": g.document_count,
+                        "entity_count": g.entity_count,
+                        "relation_count": g.relation_count,
+                    }
+                    for g in graphs
+                ]
+            }
+        except Exception as e:
+            logger.error(f"Error listing graphs: {e}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @mgr_router.post("", dependencies=[Depends(combined_auth)], response_model=Dict[str, Any], status_code=201)
+    async def create_graph(request: CreateGraphRequest):
+        """Criar novo grafo"""
+        try:
+            metadata = graph_manager.create_graph(
+                name=request.name,
+                description=request.description,
+                graph_id=request.graph_id
+            )
+            return {
+                "status": "success",
+                "message": f"Graph '{request.name}' created successfully",
+                "graph": {
+                    "id": metadata.id,
+                    "name": metadata.name,
+                    "description": metadata.description,
+                    "created_at": metadata.created_at,
+                }
+            }
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"Error creating graph: {e}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @mgr_router.get("/names", dependencies=[Depends(combined_auth)], response_model=Dict[str, Any])
+    async def get_graph_names():
+        """Obter lista simples de nomes de graphs (para UI dropdown)"""
+        try:
+            graphs = graph_manager.list_graphs()
+            return {
+                "status": "success",
+                "graph_ids": [g.id for g in graphs],
+                "graph_names": [{"id": g.id, "name": g.name} for g in graphs]
+            }
+        except Exception as e:
+            logger.error(f"Error getting graph names: {e}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @mgr_router.get("/{graph_id}", dependencies=[Depends(combined_auth)], response_model=Dict[str, Any])
+    async def get_graph(graph_id: str):
+        """Obter detalhes de um grafo específico"""
+        try:
+            metadata = graph_manager.get_graph(graph_id)
+            if not metadata:
+                raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
+            
+            is_default = graph_id == graph_manager.get_default_graph_id()
+            
+            return {
+                "status": "success",
+                "graph": {
+                    "id": metadata.id,
+                    "name": metadata.name,
+                    "description": metadata.description,
+                    "created_at": metadata.created_at,
+                    "updated_at": metadata.updated_at,
+                    "document_count": metadata.document_count,
+                    "entity_count": metadata.entity_count,
+                    "relation_count": metadata.relation_count,
+                    "is_default": is_default,
+                }
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error getting graph: {e}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @mgr_router.put("/{graph_id}", dependencies=[Depends(combined_auth)], response_model=Dict[str, Any])
+    async def update_graph(graph_id: str, request: UpdateGraphRequest):
+        """Atualizar um grafo"""
+        try:
+            updates = {k: v for k, v in request.dict().items() if v is not None}
+            
+            if not updates:
+                raise HTTPException(status_code=400, detail="No fields to update")
+            
+            metadata = graph_manager.update_graph_metadata(graph_id, **updates)
+            
+            if not metadata:
+                raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
+            
+            return {
+                "status": "success",
+                "message": f"Graph '{graph_id}' updated successfully",
+                "graph": {
+                    "id": metadata.id,
+                    "name": metadata.name,
+                    "description": metadata.description,
+                    "updated_at": metadata.updated_at,
+                }
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error updating graph: {e}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @mgr_router.delete("/{graph_id}", dependencies=[Depends(combined_auth)], response_model=Dict[str, Any])
+    async def delete_graph(graph_id: str, force: bool = Query(False)):
+        """
+        Deletar um grafo
+        
+        Args:
+            graph_id: ID do grafo a deletar
+            force: Se True, permite deletar grafo padrão
+        """
+        try:
+            success = graph_manager.delete_graph(graph_id, force=force)
+            if not success:
+                raise HTTPException(status_code=400, detail=f"Failed to delete graph '{graph_id}'")
+            
+            return {
+                "status": "success",
+                "message": f"Graph '{graph_id}' deleted successfully"
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error deleting graph: {e}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @mgr_router.post("/{graph_id}/set-default", dependencies=[Depends(combined_auth)], response_model=Dict[str, Any])
+    async def set_default_graph(graph_id: str):
+        """Definir um grafo como padrão"""
+        try:
+            success = graph_manager.set_default_graph(graph_id)
+            if not success:
+                raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
+            
+            return {
+                "status": "success",
+                "message": f"Graph '{graph_id}' set as default",
+                "default_graph_id": graph_id
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error setting default graph: {e}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    return mgr_router

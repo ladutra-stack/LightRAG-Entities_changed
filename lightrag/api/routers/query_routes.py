@@ -4,7 +4,7 @@ This module contains all query-related routes for the LightRAG API.
 
 import json
 from typing import Any, Dict, List, Literal, Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from lightrag.base import QueryParam
 from lightrag.api.utils_api import get_combined_auth_dependency
 from lightrag.utils import logger
@@ -236,7 +236,9 @@ class FilterDataRequest(BaseModel):
     )
 
 
-def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
+def create_query_routes(
+    rag, api_key: Optional[str] = None, top_k: int = 60, graph_manager=None, rag_pool=None
+):
     combined_auth = get_combined_auth_dependency(api_key)
 
     @router.post(
@@ -368,7 +370,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             },
         },
     )
-    async def query_text(request: QueryRequest):
+    async def query_text(
+        request: QueryRequest,
+        graph_id: str = Query(..., description="MANDATORY - The ID of the knowledge graph to query"),
+    ):
         """
         Comprehensive RAG query endpoint with non-streaming response. Parameter "stream" is ignored.
 
@@ -445,17 +450,42 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         Raises:
             HTTPException:
                 - 400: Invalid input parameters (e.g., query too short)
+                - 404: Graph not found
                 - 500: Internal processing error (e.g., LLM service unavailable)
         """
         try:
+            # Validate graph_id parameter
+            if not graph_id or not graph_id.strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="graph_id parameter is MANDATORY and cannot be empty or whitespace",
+                )
+            
+            # Trim whitespace from graph_id
+            graph_id = graph_id.strip()
+
+            # Check if graph exists (if graph_manager available)
+            if graph_manager:
+                if not graph_manager.graph_exists(graph_id):
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Graph '{graph_id}' not found. Please create it first.",
+                    )
+
             param = request.to_query_params(
                 False
             )  # Ensure stream=False for non-streaming endpoint
             # Force stream=False for /query endpoint regardless of include_references setting
             param.stream = False
 
+            # Phase 4: Use graph-specific RAG if rag_pool is available
+            if rag_pool:
+                query_rag = await rag_pool.get_or_create_rag(graph_id)
+            else:
+                query_rag = rag
+
             # Unified approach: always use aquery_llm for both cases
-            result = await rag.aquery_llm(request.query, param=param)
+            result = await query_rag.aquery_llm(request.query, param=param)
 
             # Extract LLM response and references from unified result
             llm_response = result.get("llm_response", {})
@@ -495,6 +525,9 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 return QueryResponse(response=response_content, references=references)
             else:
                 return QueryResponse(response=response_content, references=None)
+        except HTTPException:
+            # Re-raise HTTP exceptions (400, 404, etc.)
+            raise
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
@@ -578,7 +611,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             },
         },
     )
-    async def query_text_stream(request: QueryRequest):
+    async def query_text_stream(
+        request: QueryRequest,
+        graph_id: str = Query(..., description="MANDATORY - The ID of the knowledge graph to query"),
+    ):
         """
         Advanced RAG query endpoint with flexible streaming response.
 
@@ -706,14 +742,38 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             Use streaming mode for real-time interfaces and non-streaming for batch processing.
         """
         try:
+            # Validate graph_id parameter
+            if not graph_id or not graph_id.strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="graph_id parameter is MANDATORY and cannot be empty or whitespace",
+                )
+            
+            # Trim whitespace from graph_id
+            graph_id = graph_id.strip()
+
+            # Check if graph exists (if graph_manager available)
+            if graph_manager:
+                if not graph_manager.graph_exists(graph_id):
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Graph '{graph_id}' not found. Please create it first.",
+                    )
+
             # Use the stream parameter from the request, defaulting to True if not specified
             stream_mode = request.stream if request.stream is not None else True
             param = request.to_query_params(stream_mode)
 
             from fastapi.responses import StreamingResponse
 
+            # Phase 4: Use graph-specific RAG if rag_pool is available
+            if rag_pool:
+                query_rag = await rag_pool.get_or_create_rag(graph_id)
+            else:
+                query_rag = rag
+
             # Unified approach: always use aquery_llm for all cases
-            result = await rag.aquery_llm(request.query, param=param)
+            result = await query_rag.aquery_llm(request.query, param=param)
 
             async def stream_generator():
                 # Extract references and LLM response from unified result
@@ -781,6 +841,9 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     "X-Accel-Buffering": "no",  # Ensure proper handling of streaming response when proxied by Nginx
                 },
             )
+        except HTTPException:
+            # Re-raise HTTP exceptions (400, 404, etc.)
+            raise
         except Exception as e:
             logger.error(f"Error processing streaming query: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
@@ -1081,7 +1144,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             },
         },
     )
-    async def query_data(request: QueryRequest):
+    async def query_data(
+        request: QueryRequest,
+        graph_id: str = Query(..., description="MANDATORY - The ID of the knowledge graph to query"),
+    ):
         """
         Advanced data retrieval endpoint for structured RAG analysis.
 
@@ -1178,6 +1244,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         Raises:
             HTTPException:
                 - 400: Invalid input parameters (e.g., query too short, invalid mode)
+                - 404: Graph not found
                 - 500: Internal processing error (e.g., knowledge graph unavailable)
 
         Note:
@@ -1185,8 +1252,33 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             as structured data analysis typically requires source attribution.
         """
         try:
+            # Validate graph_id parameter
+            if not graph_id or not graph_id.strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="graph_id parameter is MANDATORY and cannot be empty or whitespace",
+                )
+            
+            # Trim whitespace from graph_id
+            graph_id = graph_id.strip()
+
+            # Check if graph exists (if graph_manager available)
+            if graph_manager:
+                if not graph_manager.graph_exists(graph_id):
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Graph '{graph_id}' not found. Please create it first.",
+                    )
+
             param = request.to_query_params(False)  # No streaming for data endpoint
-            response = await rag.aquery_data(request.query, param=param)
+            
+            # Phase 4: Use graph-specific RAG if rag_pool is available
+            if rag_pool:
+                query_rag = await rag_pool.get_or_create_rag(graph_id)
+            else:
+                query_rag = rag
+            
+            response = await query_rag.aquery_data(request.query, param=param)
 
             # aquery_data returns the new format with status, message, data, and metadata
             if isinstance(response, dict):
@@ -1199,6 +1291,9 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     data={},
                     metadata={},
                 )
+        except HTTPException:
+            # Re-raise HTTP exceptions (400, 404, etc.)
+            raise
         except Exception as e:
             logger.error(f"Error processing data query: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
@@ -1251,7 +1346,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             },
         },
     )
-    async def filter_query_data(request: FilterDataRequest):
+    async def filter_query_data(
+        request: FilterDataRequest,
+        graph_id: str = Query(..., description="MANDATORY - The ID of the knowledge graph to query"),
+    ):
         """
         Filter entities by type and retrieve associated data.
 
@@ -1308,9 +1406,28 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         Raises:
             HTTPException:
                 - 400: Invalid filter configuration
+                - 404: Graph not found
                 - 500: Processing error
         """
         try:
+            # Validate graph_id parameter
+            if not graph_id or not graph_id.strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="graph_id parameter is MANDATORY and cannot be empty or whitespace",
+                )
+            
+            # Trim whitespace from graph_id
+            graph_id = graph_id.strip()
+
+            # Check if graph exists (if graph_manager available)
+            if graph_manager:
+                if not graph_manager.graph_exists(graph_id):
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Graph '{graph_id}' not found. Please create it first.",
+                    )
+
             # Build QueryParam with reranking parameters
             param = QueryParam(
                 mode=request.mode,
@@ -1319,8 +1436,14 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 enable_rerank=request.enable_rerank or True,
             )
 
+            # Phase 4: Use graph-specific RAG if rag_pool is available
+            if rag_pool:
+                query_rag = await rag_pool.get_or_create_rag(graph_id)
+            else:
+                query_rag = rag
+
             # Call afilter_data with filter_config
-            response = await rag.afilter_data(
+            response = await query_rag.afilter_data(
                 query=request.query or "",
                 filter_config=request.filter_config or {},
                 param=param
@@ -1358,6 +1481,9 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
             return QueryDataResponse(**response)
 
+        except HTTPException:
+            # Re-raise HTTP exceptions (400, 404, etc.)
+            raise
         except Exception as e:
             logger.error(f"Error processing filter query: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
