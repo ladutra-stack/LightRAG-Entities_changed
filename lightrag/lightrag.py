@@ -2942,7 +2942,7 @@ class LightRAG:
 
                     # Call rerank function
                     rerank_results = await self.rerank_model_func(
-                        query=query, documents=documents, top_k=min(top_k, len(documents))
+                        query=query, documents=documents, top_n=min(top_k, len(documents))
                     )
 
                     # Reorder based on rerank results
@@ -3321,7 +3321,7 @@ class LightRAG:
 
                     # Call rerank function
                     rerank_results = await self.rerank_model_func(
-                        query=query, documents=documents, top_k=min(chunk_limit, len(documents))
+                        query=query, documents=documents, top_n=min(chunk_limit, len(documents))
                     )
 
                     # Reorder based on rerank results
