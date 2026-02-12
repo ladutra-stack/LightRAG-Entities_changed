@@ -107,6 +107,8 @@ export type Message = {
 
 export type QueryRequest = {
   query: string
+  /** MANDATORY - The ID of the knowledge graph to query */
+  graph_id?: string
   /** Specifies the retrieval mode. */
   mode: QueryMode
   /** If True, only returns the retrieved context without generating a response. */
@@ -450,6 +452,11 @@ axiosInstance.interceptors.response.use(
 )
 
 // API methods
+export const listGraphs = async (): Promise<any> => {
+  const response = await axiosInstance.get('/graphs')
+  return response.data
+}
+
 export const queryGraphs = async (
   label: string,
   maxDepth: number,
@@ -508,16 +515,31 @@ export const getDocumentsScanProgress = async (): Promise<LightragDocumentsScanP
   return response.data
 }
 
-export const queryText = async (request: QueryRequest): Promise<QueryResponse> => {
-  const response = await axiosInstance.post('/query', request)
+export const queryText = async (request: QueryRequest, graphId?: string): Promise<QueryResponse> => {
+  // Ensure graph_id is included in request (MANDATORY)
+  const graphIdToUse = graphId || request.graph_id
+  if (!graphIdToUse) {
+    throw new Error('graph_id is required for query. Please select a graph or pass graph_id parameter.')
+  }
+  
+  const response = await axiosInstance.post(`/query?graph_id=${encodeURIComponent(graphIdToUse)}`, request)
   return response.data
 }
 
 export const queryTextStream = async (
   request: QueryRequest,
   onChunk: (chunk: string) => void,
-  onError?: (error: string) => void
+  onError?: (error: string) => void,
+  graphId?: string
 ) => {
+  // Ensure graph_id is included (MANDATORY)
+  const graphIdToUse = graphId || request.graph_id
+  if (!graphIdToUse) {
+    const error = 'graph_id is required for query. Please select a graph or pass graph_id parameter.'
+    onError?.(error)
+    throw new Error(error)
+  }
+
   const apiKey = useSettingsStore.getState().apiKey;
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
   const headers: HeadersInit = {
@@ -532,7 +554,7 @@ export const queryTextStream = async (
   }
 
   try {
-    const response = await fetch(`${backendBaseUrl}/query/stream`, {
+    const response = await fetch(`${backendBaseUrl}/query/stream?graph_id=${encodeURIComponent(graphIdToUse)}`, {
       method: 'POST',
       headers: headers,
       body: JSON.stringify(request),
@@ -555,7 +577,7 @@ export const queryTextStream = async (
             const retryHeaders = { ...headers };
             retryHeaders['Authorization'] = `Bearer ${newToken}`;
 
-            const retryResponse = await fetch(`${backendBaseUrl}/query/stream`, {
+            const retryResponse = await fetch(`${backendBaseUrl}/query/stream?graph_id=${encodeURIComponent(graphIdToUse)}`, {
               method: 'POST',
               headers: retryHeaders,
               body: JSON.stringify(request),
@@ -791,10 +813,17 @@ export const insertTexts = async (texts: string[]): Promise<DocActionResponse> =
 
 export const uploadDocument = async (
   file: File,
-  onUploadProgress?: (percentCompleted: number) => void
+  onUploadProgress?: (percentCompleted: number) => void,
+  graphId?: string,
+  create: boolean = false
 ): Promise<DocActionResponse> => {
   const formData = new FormData()
   formData.append('file', file)
+  
+  // Add graph_id and create parameters for multi-graph support
+  // MANDATORY: always include graph_id, even if empty string (will cause meaningful 400 error)
+  formData.append('graph_id', graphId || '')
+  formData.append('create', String(create))
 
   const response = await axiosInstance.post('/documents/upload', formData, {
     headers: {
@@ -814,13 +843,15 @@ export const uploadDocument = async (
 
 export const batchUploadDocuments = async (
   files: File[],
-  onUploadProgress?: (fileName: string, percentCompleted: number) => void
+  onUploadProgress?: (fileName: string, percentCompleted: number) => void,
+  graphId?: string,
+  create: boolean = false
 ): Promise<DocActionResponse[]> => {
   return await Promise.all(
     files.map(async (file) => {
       return await uploadDocument(file, (percentCompleted) => {
         onUploadProgress?.(file.name, percentCompleted)
-      })
+      }, graphId, create)
     })
   )
 }

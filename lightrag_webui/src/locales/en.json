@@ -461,5 +461,18 @@
     "prevPage": "Previous Page",
     "nextPage": "Next Page",
     "lastPage": "Last Page"
+  },
+  "graphSelector": {
+    "title": "Knowledge Graphs",
+    "selectGraph": "Select Graph",
+    "documents": "Documents",
+    "entities": "Entities",
+    "relations": "Relations",
+    "createNew": "Create New",
+    "settings": "Settings",
+    "refreshed": "Graphs refreshed successfully"
+  },
+  "error": {
+    "failedToFetchGraphs": "Failed to fetch graphs"
   }
 }

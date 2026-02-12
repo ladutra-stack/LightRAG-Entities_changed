@@ -13,6 +13,7 @@ import { EraserIcon, SendIcon, CopyIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { copyToClipboard } from '@/utils/clipboard'
+import { useGraph } from '@/contexts/GraphContext'
 import type { QueryMode } from '@/api/lightrag'
 
 // Helper function to generate unique IDs with browser compatibility
@@ -103,6 +104,8 @@ const parseCOTContent = (content: string) => {
 
 export default function RetrievalTesting() {
   const { t } = useTranslation()
+  // Get selected graph for multi-graph support (MANDATORY for query)
+  const { selectedGraphId } = useGraph()
   // Get current tab to determine if this tab is active (for performance optimization)
   const currentTab = useSettingsStore.use.currentTab()
   const isRetrievalTabActive = currentTab === 'retrieval'
@@ -358,6 +361,7 @@ export default function RetrievalTesting() {
         ...state.querySettings,
         query: actualQuery,
         response_type: 'Multiple Paragraphs',
+        graph_id: selectedGraphId,
         conversation_history: effectiveHistoryTurns > 0
           ? prevMessages
             .filter((m) => m.isError !== true)
@@ -368,12 +372,16 @@ export default function RetrievalTesting() {
       }
 
       try {
-        // Run query
+        // Run query - Pass selectedGraphId for multi-graph support
+        if (!selectedGraphId) {
+          throw new Error('Please select a graph before querying.')
+        }
+        
         if (state.querySettings.stream) {
           let errorMessage = ''
           await queryTextStream(queryParams, updateAssistantMessage, (error) => {
             errorMessage += error
-          })
+          }, selectedGraphId)
           if (errorMessage) {
             if (assistantMessage.content) {
               errorMessage = assistantMessage.content + '\n' + errorMessage
@@ -381,7 +389,7 @@ export default function RetrievalTesting() {
             updateAssistantMessage(errorMessage, true)
           }
         } else {
-          const response = await queryText(queryParams)
+          const response = await queryText(queryParams, selectedGraphId)
           updateAssistantMessage(response.response)
         }
       } catch (err) {

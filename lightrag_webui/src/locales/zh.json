@@ -461,5 +461,18 @@
     "prevPage": "上一页",
     "nextPage": "下一页",
     "lastPage": "末页"
+  },
+  "graphSelector": {
+    "title": "知识图谱",
+    "selectGraph": "选择图谱",
+    "documents": "文档数",
+    "entities": "实体数",
+    "relations": "关系数",
+    "createNew": "创建新图谱",
+    "settings": "设置",
+    "refreshed": "图谱列表已刷新"
+  },
+  "error": {
+    "failedToFetchGraphs": "获取图谱列表失败"
   }
 }

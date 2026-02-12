@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import ThemeProvider from '@/components/ThemeProvider'
 import TabVisibilityProvider from '@/contexts/TabVisibilityProvider'
+import { GraphProvider } from '@/contexts/GraphContext'
 import ApiKeyAlert from '@/components/ApiKeyAlert'
 import StatusIndicator from '@/components/status/StatusIndicator'
 import { SiteInfo, webuiPrefix } from '@/lib/constants'
@@ -164,7 +165,8 @@ function App() {
 
   return (
     <ThemeProvider>
-      <TabVisibilityProvider>
+      <GraphProvider>
+        <TabVisibilityProvider>
         {initializing ? (
           // Loading state while initializing with simplified header
           <div className="flex h-screen w-screen flex-col">
@@ -223,6 +225,7 @@ function App() {
           </main>
         )}
       </TabVisibilityProvider>
+      </GraphProvider>
     </ThemeProvider>
   )
 }

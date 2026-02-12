@@ -2864,6 +2864,7 @@ async def extract_entities(
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
     text_chunks_storage: BaseKVStorage | None = None,
+    graph_id: str | None = None,
 ) -> list:
     # Check for cancellation at the start of entity extraction
     if pipeline_status is not None and pipeline_status_lock is not None:
@@ -2894,12 +2895,17 @@ async def extract_entities(
     # add example's format
     examples = examples.format(**example_context_base)
 
+    # Add graph_id context to prompt for multi-graph support
+    # This helps prevent entity extraction context bleeding between graphs
+    graph_context = f"\n[Processing graph: {graph_id or 'default'}]" if graph_id else ""
+    
     context_base = dict(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
         entity_types=",".join(entity_types),
         examples=examples,
         language=language,
+        graph_context=graph_context,  # Add graph context for LLM awareness
     )
 
     processed_chunks = 0

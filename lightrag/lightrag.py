@@ -1300,13 +1300,14 @@ class LightRAG:
         ids: list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
+        graph_id: str | None = None,
     ) -> str:
         """
         Pipeline for Processing Documents
 
         1. Validate ids if provided or generate MD5 hash IDs and remove duplicate contents
         2. Generate document initial status
-        3. Filter out already processed documents
+        3. Filter out already processed documents (within current graph_id only)
         4. Enqueue document in status
 
         Args:
@@ -1314,10 +1315,13 @@ class LightRAG:
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: list of file paths corresponding to each document, used for citation
             track_id: tracking ID for monitoring processing status, if not provided, will be generated with "enqueue" prefix
+            graph_id: Optional graph_id for multi-graph deduplication (defaults to self.graph_id)
 
         Returns:
             str: tracking ID for monitoring processing status
         """
+        # Use provided graph_id or instance's graph_id for per-graph deduplication
+        effective_graph_id = graph_id or self.graph_id or "default"
         # Generate track_id if not provided
         if track_id is None or track_id.strip() == "":
             track_id = generate_track_id("enqueue")
@@ -1379,7 +1383,7 @@ class LightRAG:
                 for content, path in unique_content_with_paths.items()
             }
 
-        # 2. Generate document initial status (without content)
+        # 2. Generate document initial status (without content, with graph_id)
         new_docs: dict[str, Any] = {
             id_: {
                 "status": DocStatus.PENDING,
@@ -1391,15 +1395,27 @@ class LightRAG:
                     "file_path"
                 ],  # Store file path in document status
                 "track_id": track_id,  # Store track_id in document status
+                "graph_id": effective_graph_id,  # Store graph_id for multi-graph isolation
             }
             for id_, content_data in contents.items()
         }
 
-        # 3. Filter out already processed documents
+        # 3. Filter out already processed documents (per-graph isolation)
         # Get docs ids
         all_new_doc_ids = set(new_docs.keys())
-        # Exclude IDs of documents that are already enqueued
-        unique_new_doc_ids = await self.doc_status.filter_keys(all_new_doc_ids)
+        # Exclude IDs of documents that are already enqueued in this graph
+        # Query existing documents and filter by graph_id for multi-graph support
+        existing_docs = await self.doc_status.get_docs_by_status(DocStatus.PENDING)
+        existing_docs.update(await self.doc_status.get_docs_by_status(DocStatus.PROCESSING))
+        existing_docs.update(await self.doc_status.get_docs_by_status(DocStatus.PROCESSED))
+        
+        # Filter to only documents in current graph
+        docs_in_current_graph = {
+            doc_id: doc for doc_id, doc in existing_docs.items()
+            if doc.get("graph_id", "default") == effective_graph_id
+        }
+        existing_doc_ids = set(docs_in_current_graph.keys())
+        unique_new_doc_ids = all_new_doc_ids - existing_doc_ids
 
         # Handle duplicate documents - create trackable records with current track_id
         ignored_ids = list(all_new_doc_ids - unique_new_doc_ids)
@@ -1681,12 +1697,18 @@ class LightRAG:
         each chunk for entity and relation extraction, and updating the
         document status.
 
-        1. Get all pending, failed, and abnormally terminated processing documents.
-        2. Validate document data consistency and fix any issues
-        3. Split document content into chunks
-        4. Process each chunk for entity and relation extraction
-        5. Update the document status
+        1. Ensure storages are initialized (needed for RAGs from pool)
+        2. Get all pending, failed, and abnormally terminated processing documents.
+        3. Validate document data consistency and fix any issues
+        4. Split document content into chunks
+        5. Process each chunk for entity and relation extraction
+        6. Update the document status
         """
+
+        # Ensure storages are initialized (needed for RAGs from pool)
+        if self._storages_status != StoragesStatus.INITIALIZED:
+            logger.debug(f"Initializing storages for document processing (current status: {self._storages_status})")
+            await self.initialize_storages()
 
         # Get pipeline status shared data and lock
         pipeline_status = await get_namespace_data(
@@ -1897,12 +1919,13 @@ class LightRAG:
                                     f"got {type(chunking_result)}"
                                 )
 
-                            # Build chunks dictionary
+                            # Build chunks dictionary with graph_id context
                             chunks: dict[str, Any] = {
                                 compute_mdhash_id(dp["content"], prefix="chunk-"): {
                                     **dp,
                                     "full_doc_id": doc_id,
                                     "file_path": file_path,  # Add file path to each chunk
+                                    "graph_id": self.graph_id or "default",  # Add graph_id for multi-graph isolation
                                     "llm_cache_list": [],  # Initialize empty LLM cache list for each chunk
                                 }
                                 for dp in chunking_result
@@ -2238,13 +2261,18 @@ class LightRAG:
         self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
     ) -> list:
         try:
+            # Add graph_id context for multi-graph support
+            global_config_dict = asdict(self)
+            global_config_dict["graph_id"] = self.graph_id or "default"
+            
             chunk_results = await extract_entities(
                 chunk,
-                global_config=asdict(self),
+                global_config=global_config_dict,
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
                 llm_response_cache=self.llm_response_cache,
                 text_chunks_storage=self.text_chunks,
+                graph_id=self.graph_id,
             )
             return chunk_results
         except Exception as e:

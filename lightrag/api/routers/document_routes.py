@@ -1688,6 +1688,12 @@ async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = No
         track_id: Optional tracking ID
     """
     try:
+        # Ensure storages are initialized (needed for RAGs from pool)
+        from lightrag.kg.shared_storage_interface import StoragesStatus
+        if rag._storages_status != StoragesStatus.INITIALIZED:
+            logger.debug(f"Initializing storages for RAG (current status: {rag._storages_status})")
+            await rag.initialize_storages()
+        
         success, returned_track_id = await pipeline_enqueue_file(
             rag, file_path, track_id
         )
@@ -1712,6 +1718,12 @@ async def pipeline_index_files(
     if not file_paths:
         return
     try:
+        # Ensure storages are initialized (needed for RAGs from pool)
+        from lightrag.kg.shared_storage_interface import StoragesStatus
+        if rag._storages_status != StoragesStatus.INITIALIZED:
+            logger.debug(f"Initializing storages for RAG (current status: {rag._storages_status})")
+            await rag.initialize_storages()
+        
         enqueued = False
 
         # Use get_pinyin_sort_key for Chinese pinyin sorting
@@ -1749,6 +1761,13 @@ async def pipeline_index_texts(
     """
     if not texts:
         return
+    
+    # Ensure storages are initialized (needed for RAGs from pool)
+    from lightrag.kg.shared_storage_interface import StoragesStatus
+    if rag._storages_status != StoragesStatus.INITIALIZED:
+        logger.debug(f"Initializing storages for RAG (current status: {rag._storages_status})")
+        await rag.initialize_storages()
+    
     if file_sources is not None:
         if len(file_sources) != 0 and len(file_sources) != len(texts):
             [
