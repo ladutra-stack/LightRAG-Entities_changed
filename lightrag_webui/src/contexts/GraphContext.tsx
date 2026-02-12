@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react'
 import { listGraphs } from '@/api/lightrag'
-import { logger } from '@/utils'
 
 interface Graph {
   id: string
@@ -45,7 +44,7 @@ export const GraphProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         }
       }
     } catch (error) {
-      logger.error('Failed to fetch graphs:', error)
+      console.error('Failed to fetch graphs:', error)
     } finally {
       setLoading(false)
     }
