@@ -156,7 +156,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 status_code=500, detail=f"Error searching labels: {str(e)}"
             )
 
-    @router.get("/graphs", dependencies=[Depends(combined_auth)])
+    @router.get("/graphs/search", dependencies=[Depends(combined_auth)])
     async def get_knowledge_graph(
         label: str = Query(..., description="Label to get knowledge graph for"),
         max_depth: int = Query(3, description="Maximum depth of graph", ge=1),
@@ -711,6 +711,8 @@ def create_graph_manager_routes(graph_manager, api_key: Optional[str] = None):
         """Listar todos os grafos disponíveis"""
         try:
             graphs = graph_manager.list_graphs()
+            default_graph_id = graph_manager.get_default_graph_id()
+            
             return {
                 "status": "success",
                 "count": len(graphs),
@@ -724,6 +726,7 @@ def create_graph_manager_routes(graph_manager, api_key: Optional[str] = None):
                         "document_count": g.document_count,
                         "entity_count": g.entity_count,
                         "relation_count": g.relation_count,
+                        "is_default": g.id == default_graph_id,
                     }
                     for g in graphs
                 ]

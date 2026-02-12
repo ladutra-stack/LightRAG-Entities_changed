@@ -1689,7 +1689,7 @@ async def pipeline_index_file(rag: LightRAG, file_path: Path, track_id: str = No
     """
     try:
         # Ensure storages are initialized (needed for RAGs from pool)
-        from lightrag.kg.shared_storage_interface import StoragesStatus
+        from lightrag.base import StoragesStatus
         if rag._storages_status != StoragesStatus.INITIALIZED:
             logger.debug(f"Initializing storages for RAG (current status: {rag._storages_status})")
             await rag.initialize_storages()
@@ -1719,7 +1719,7 @@ async def pipeline_index_files(
         return
     try:
         # Ensure storages are initialized (needed for RAGs from pool)
-        from lightrag.kg.shared_storage_interface import StoragesStatus
+        from lightrag.base import StoragesStatus
         if rag._storages_status != StoragesStatus.INITIALIZED:
             logger.debug(f"Initializing storages for RAG (current status: {rag._storages_status})")
             await rag.initialize_storages()
@@ -1763,7 +1763,7 @@ async def pipeline_index_texts(
         return
     
     # Ensure storages are initialized (needed for RAGs from pool)
-    from lightrag.kg.shared_storage_interface import StoragesStatus
+    from lightrag.base import StoragesStatus
     if rag._storages_status != StoragesStatus.INITIALIZED:
         logger.debug(f"Initializing storages for RAG (current status: {rag._storages_status})")
         await rag.initialize_storages()
