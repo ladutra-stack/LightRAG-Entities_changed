@@ -740,6 +740,8 @@ class DocProcessingStatus:
     """Additional metadata"""
     multimodal_processed: bool | None = field(default=None, repr=False)
     """Internal field: indicates if multimodal processing is complete. Not shown in repr() but accessible for debugging."""
+    graph_id: str | None = None
+    """Graph ID for multi-graph support - indicates which knowledge graph this document belongs to"""
 
     def __post_init__(self):
         """

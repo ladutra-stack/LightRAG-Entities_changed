@@ -1412,7 +1412,7 @@ class LightRAG:
         # Filter to only documents in current graph
         docs_in_current_graph = {
             doc_id: doc for doc_id, doc in existing_docs.items()
-            if doc.get("graph_id", "default") == effective_graph_id
+            if (doc.graph_id or "default") == effective_graph_id
         }
         existing_doc_ids = set(docs_in_current_graph.keys())
         unique_new_doc_ids = all_new_doc_ids - existing_doc_ids
