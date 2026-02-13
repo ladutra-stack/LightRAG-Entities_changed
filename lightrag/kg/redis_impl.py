@@ -911,6 +911,7 @@ class RedisDocStatusStorage(DocStatusStorage):
         page_size: int = 50,
         sort_field: str = "updated_at",
         sort_direction: str = "desc",
+        graph_id: str | None = None,
     ) -> tuple[list[tuple[str, DocProcessingStatus]], int]:
         """Get documents with pagination support
 
@@ -920,6 +921,7 @@ class RedisDocStatusStorage(DocStatusStorage):
             page_size: Number of documents per page (10-200)
             sort_field: Field to sort by ('created_at', 'updated_at', 'id')
             sort_direction: Sort direction ('asc' or 'desc')
+            graph_id: (Optional) Filter by graph ID for multi-graph support
 
         Returns:
             Tuple of (list of (doc_id, DocProcessingStatus) tuples, total_count)
@@ -969,6 +971,10 @@ class RedisDocStatusStorage(DocStatusStorage):
                                         and doc_data.get("status")
                                         != status_filter.value
                                     ):
+                                        continue
+
+                                    # Apply graph_id filter
+                                    if graph_id is not None and doc_data.get("graph_id") != graph_id:
                                         continue
 
                                     # Extract document ID from key

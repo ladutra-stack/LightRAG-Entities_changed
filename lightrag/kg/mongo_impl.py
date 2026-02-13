@@ -609,6 +609,7 @@ class MongoDocStatusStorage(DocStatusStorage):
         page_size: int = 50,
         sort_field: str = "updated_at",
         sort_direction: str = "desc",
+        graph_id: str | None = None,
     ) -> tuple[list[tuple[str, DocProcessingStatus]], int]:
         """Get documents with pagination support
 
@@ -618,6 +619,7 @@ class MongoDocStatusStorage(DocStatusStorage):
             page_size: Number of documents per page (10-200)
             sort_field: Field to sort by ('created_at', 'updated_at', '_id')
             sort_direction: Sort direction ('asc' or 'desc')
+            graph_id: (Optional) Filter by graph ID for multi-graph support
 
         Returns:
             Tuple of (list of (doc_id, DocProcessingStatus) tuples, total_count)
@@ -640,6 +642,8 @@ class MongoDocStatusStorage(DocStatusStorage):
         query_filter = {}
         if status_filter is not None:
             query_filter["status"] = status_filter.value
+        if graph_id is not None:
+            query_filter["graph_id"] = graph_id
 
         # Get total count
         total_count = await self._data.count_documents(query_filter)

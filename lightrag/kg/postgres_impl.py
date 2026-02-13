@@ -3551,6 +3551,7 @@ class PGDocStatusStorage(DocStatusStorage):
         page_size: int = 50,
         sort_field: str = "updated_at",
         sort_direction: str = "desc",
+        graph_id: str | None = None,
     ) -> tuple[list[tuple[str, DocProcessingStatus]], int]:
         """Get documents with pagination support
 
@@ -3560,6 +3561,7 @@ class PGDocStatusStorage(DocStatusStorage):
             page_size: Number of documents per page (10-200)
             sort_field: Field to sort by ('created_at', 'updated_at', 'id')
             sort_direction: Sort direction ('asc' or 'desc')
+            graph_id: (Optional) Filter by graph ID for multi-graph support
 
         Returns:
             Tuple of (list of (doc_id, DocProcessingStatus) tuples, total_count)
@@ -3597,6 +3599,11 @@ class PGDocStatusStorage(DocStatusStorage):
             params["status"] = status_filter.value
         else:
             where_clause = "WHERE workspace=$1"
+
+        if graph_id is not None:
+            param_count += 1
+            where_clause += f" AND graph_id=${param_count}"
+            params["graph_id"] = graph_id
 
         # Build ORDER BY clause using validated whitelist values
         order_clause = f"ORDER BY {sort_field} {sort_direction.upper()}"
