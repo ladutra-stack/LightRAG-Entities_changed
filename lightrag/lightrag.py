@@ -2902,7 +2902,7 @@ class LightRAG:
 
                     # Call rerank function
                     rerank_results = await self.rerank_model_func(
-                        query=query, documents=documents, top_k=min(top_k, len(documents))
+                        query=query, documents=documents, top_n=min(top_k, len(documents))
                     )
 
                     # Reorder based on rerank results
@@ -3264,6 +3264,10 @@ class LightRAG:
             chunk_limit = param.chunk_top_k or param.top_k
             reranking_applied = False
 
+            logger.debug(
+                f"Rerank check: enable_rerank={param.enable_rerank}, has_rerank_func={self.rerank_model_func is not None}, semantic_search={semantic_search_applied}"
+            )
+
             if param.enable_rerank and self.rerank_model_func and semantic_search_applied:
                 try:
                     logger.info(
@@ -3281,7 +3285,7 @@ class LightRAG:
 
                     # Call rerank function
                     rerank_results = await self.rerank_model_func(
-                        query=query, documents=documents, top_k=min(chunk_limit, len(documents))
+                        query=query, documents=documents, top_n=min(chunk_limit, len(documents))
                     )
 
                     # Reorder based on rerank results
