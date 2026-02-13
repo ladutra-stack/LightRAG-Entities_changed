@@ -1190,6 +1190,10 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
             # aquery_data returns the new format with status, message, data, and metadata
             if isinstance(response, dict):
+                # Remove chunk content if not requested
+                if not request.include_chunk_content and "data" in response and "chunks" in response["data"]:
+                    for chunk in response["data"]["chunks"]:
+                        chunk.pop("content", None)
                 return QueryDataResponse(**response)
             else:
                 # Handle unexpected response format
@@ -1316,7 +1320,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 mode=request.mode,
                 top_k=request.top_k if request.top_k is not None else 10,
                 chunk_top_k=request.chunk_top_k if request.chunk_top_k is not None else (request.top_k if request.top_k is not None else 10),
-                enable_rerank=request.enable_rerank or True,
+                enable_rerank=request.enable_rerank if request.enable_rerank is not None else False,
             )
 
             # Call afilter_data with filter_config
@@ -1337,23 +1341,24 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             # Format response to match QueryDataResponse structure
             # afilter_data returns: {status, message, chunks, metadata}
             # QueryDataResponse expects: {status, message, data: {entities, chunks, ...}, metadata}
-            # Extract entity_labels (primary) or entity_id (fallback) from filter_config
-            entity_labels = []
-            if request.filter_config:
-                entity_labels = request.filter_config.get("entity_labels") or request.filter_config.get("entity_id") or []
+            chunks = response.get("chunks", [])
+            
+            # Extract unique source_entity names from the returned chunks
+            source_entities_set = {chunk.get("source_entity") for chunk in chunks if chunk.get("source_entity")}
+            source_entities = list(source_entities_set)
             
             response_data = {
-                "entities": entity_labels,
-                "chunks": response.get("chunks", []),
+                "entities": source_entities,
+                "chunks": chunks,
                 "relationships": [],
                 "references": [],
             }
 
             # Update response structure for QueryDataResponse
             response["data"] = response_data
+            reranking_status = "reranked to top " + str(request.chunk_top_k) if response.get("metadata", {}).get("reranking_applied") else "no reranking"
             response["message"] = (
-                f"Recuperados {len(response_data['chunks'])} chunks relevantes "
-                f"({f'reranked to top {request.chunk_top_k}' if request.enable_rerank else 'no reranking'})"
+                f"Recuperados {len(chunks)} chunks relevantes ({reranking_status})"
             )
 
             return QueryDataResponse(**response)
