@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSettingsStore } from '@/stores/settings'
+import { useGraph } from '@/contexts/GraphContext'
 import Button from '@/components/ui/Button'
 import { cn } from '@/lib/utils'
 import {
@@ -220,6 +221,7 @@ export default function DocumentManager() {
 
   const [showPipelineStatus, setShowPipelineStatus] = useState(false)
   const { t, i18n } = useTranslation()
+  const { selectedGraphId } = useGraph()
   const health = useBackendState.use.health()
   const pipelineBusy = useBackendState.use.pipelineBusy()
 
@@ -692,7 +694,8 @@ export default function DocumentManager() {
         page: pageToFetch,
         page_size: pagination.page_size,
         sort_field: sortField,
-        sort_direction: sortDirection
+        sort_direction: sortDirection,
+        graph_id: selectedGraphId  // Filter documents by selected graph
       };
 
       // Use timeout wrapper for the API call (uses customTimeout if provided, otherwise withTimeout default)
@@ -754,7 +757,7 @@ export default function DocumentManager() {
         setIsRefreshing(false);
       }
     }
-  }, [statusFilter, pagination.page, pagination.page_size, sortField, sortDirection, t, updateComponentState, withTimeout, classifyError, recordFailure]);
+  }, [statusFilter, pagination.page, pagination.page_size, sortField, sortDirection, selectedGraphId, t, updateComponentState, withTimeout, classifyError, recordFailure]);
 
   // New paginated data fetching function
   const fetchPaginatedDocuments = useCallback(async (
@@ -902,7 +905,8 @@ export default function DocumentManager() {
         page: 1,
         page_size: pagination.page_size,
         sort_field: sortField,
-        sort_direction: sortDirection
+        sort_direction: sortDirection,
+        graph_id: selectedGraphId  // Filter documents by selected graph
       };
 
       const response = await getDocumentsPaginated(request);
@@ -1342,6 +1346,7 @@ export default function DocumentManager() {
                         </TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.summary')}</TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.status')}</TableHead>
+                        <TableHead>{t('documentPanel.documentManager.columns.graph')}</TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.length')}</TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.chunks')}</TableHead>
                         <TableHead
@@ -1449,6 +1454,18 @@ export default function DocumentManager() {
                                   {doc.error_msg && (
                                     <pre>{doc.error_msg}</pre>
                                   )}
+                                </div>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="group relative overflow-visible tooltip-container">
+                              <div className="truncate">
+                                {doc.graph_id || '-'}
+                              </div>
+                              {doc.graph_id && (
+                                <div className="invisible group-hover:visible tooltip">
+                                  {doc.graph_id}
                                 </div>
                               )}
                             </div>

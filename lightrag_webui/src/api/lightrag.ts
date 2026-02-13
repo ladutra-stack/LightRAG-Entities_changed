@@ -199,6 +199,7 @@ export type DocStatusResponse = {
   error_msg?: string
   metadata?: Record<string, any>
   file_path: string
+  graph_id?: string  // Graph ID for multi-graph support
 }
 
 export type DocsStatusesResponse = {
@@ -218,6 +219,7 @@ export type DocumentsRequest = {
   page_size: number
   sort_field: 'created_at' | 'updated_at' | 'id' | 'file_path'
   sort_direction: 'asc' | 'desc'
+  graph_id?: string  // Filter documents by graph ID (multi-graph support)
 }
 
 export type PaginationInfo = {
@@ -460,9 +462,18 @@ export const listGraphs = async (): Promise<any> => {
 export const queryGraphs = async (
   label: string,
   maxDepth: number,
-  maxNodes: number
+  maxNodes: number,
+  graphId?: string
 ): Promise<LightragGraphType> => {
-  const response = await axiosInstance.get(`/graphs?label=${encodeURIComponent(label)}&max_depth=${maxDepth}&max_nodes=${maxNodes}`)
+  const params = new URLSearchParams({
+    label: label,
+    max_depth: String(maxDepth),
+    max_nodes: String(maxNodes)
+  })
+  if (graphId) {
+    params.append('graph_id', graphId)
+  }
+  const response = await axiosInstance.get(`/graphs?${params.toString()}`)
   return response.data
 }
 

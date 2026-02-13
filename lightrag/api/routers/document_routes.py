@@ -615,6 +615,7 @@ class DocumentsRequest(BaseModel):
         page_size: Number of documents per page (10-200)
         sort_field: Field to sort by ('created_at', 'updated_at', 'id', 'file_path')
         sort_direction: Sort direction ('asc' or 'desc')
+        graph_id: (Optional) Filter by graph ID for multi-graph support
     """
 
     status_filter: Optional[DocStatus] = Field(
@@ -629,6 +630,9 @@ class DocumentsRequest(BaseModel):
     )
     sort_direction: Literal["asc", "desc"] = Field(
         default="desc", description="Sort direction"
+    )
+    graph_id: Optional[str] = Field(
+        default=None, description="(Optional) Filter documents by graph ID for multi-graph support"
     )
 
     class Config:
@@ -3353,6 +3357,7 @@ def create_document_routes(
                 page_size=request.page_size,
                 sort_field=request.sort_field,
                 sort_direction=request.sort_direction,
+                graph_id=request.graph_id,  # Pass graph_id for multi-graph filtering
             )
             status_counts_task = rag.doc_status.get_all_status_counts()
 
@@ -3377,6 +3382,7 @@ def create_document_routes(
                         error_msg=doc.error_msg,
                         metadata=doc.metadata,
                         file_path=doc.file_path,
+                        graph_id=getattr(doc, 'graph_id', None),  # Include graph_id for multi-graph support
                     )
                 )
 

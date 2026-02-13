@@ -16,6 +16,7 @@ import FullScreenControl from '@/components/graph/FullScreenControl'
 import Settings from '@/components/graph/Settings'
 import GraphSearch from '@/components/graph/GraphSearch'
 import GraphLabels from '@/components/graph/GraphLabels'
+import GraphSelector from '@/components/GraphSelector'
 import PropertiesView from '@/components/graph/PropertiesView'
 import SettingsDisplay from '@/components/graph/SettingsDisplay'
 import Legend from '@/components/graph/Legend'
@@ -23,6 +24,7 @@ import LegendButton from '@/components/graph/LegendButton'
 
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
+import { useGraph } from '@/contexts/GraphContext'
 import { labelColorDarkTheme, labelColorLightTheme } from '@/lib/constants'
 
 import '@react-sigma/core/lib/style.css'
@@ -112,6 +114,7 @@ const GraphViewer = () => {
   const sigmaRef = useRef<any>(null)
   const prevTheme = useRef<string>('')
 
+  const { selectedGraphId } = useGraph()
   const selectedNode = useGraphStore.use.selectedNode()
   const focusedNode = useGraphStore.use.focusedNode()
   const moveToSelectedNode = useGraphStore.use.moveToSelectedNode()
@@ -205,7 +208,8 @@ const GraphViewer = () => {
 
         <FocusOnNode node={autoFocusedNode} move={moveToSelectedNode} />
 
-        <div className="absolute top-2 left-2 flex items-start gap-2">
+        <div className="absolute top-2 left-2 flex flex-col items-start gap-2">
+          <GraphSelector compact={true} />
           <GraphLabels />
           {showNodeSearchBar && !isThemeSwitching && (
             <GraphSearch
