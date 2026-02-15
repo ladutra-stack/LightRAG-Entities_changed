@@ -2902,7 +2902,7 @@ class LightRAG:
 
                     # Call rerank function
                     rerank_results = await self.rerank_model_func(
-                        query=query, documents=documents, top_n=min(top_k, len(documents))
+                        query=query, documents=documents, top_k=min(top_k, len(documents))
                     )
 
                     # Reorder based on rerank results
@@ -3259,14 +3259,10 @@ class LightRAG:
                     chunk["similarity_score"] = 0.0
                 final_chunks = chunks_with_content
 
-            # ============ STEP 5: Reranking (if enabled) ============
+            # ============ STEP 5: Reranking and Token-based Truncation (if enabled) ============
             # Use chunk_top_k to limit chunks (NOT top_k, which is ignored in filter_data)
             chunk_limit = param.chunk_top_k or param.top_k
             reranking_applied = False
-
-            logger.debug(
-                f"Rerank check: enable_rerank={param.enable_rerank}, has_rerank_func={self.rerank_model_func is not None}, semantic_search={semantic_search_applied}"
-            )
 
             if param.enable_rerank and self.rerank_model_func and semantic_search_applied:
                 try:
@@ -3275,32 +3271,31 @@ class LightRAG:
                     )
 
                     chunks_to_rerank = final_chunks[: min(chunk_limit * 2, len(final_chunks))]
-                    documents = [
-                        {
-                            "text": chunk["content"],
-                            "id": chunk["chunk_id"],
-                        }
-                        for chunk in chunks_to_rerank
-                    ]
+                    
+                    # Extract document content for reranking (as plain strings, not dicts)
+                    documents = [chunk["content"] for chunk in chunks_to_rerank]
 
-                    # Call rerank function
+                    # Call rerank function - returns format: [{"index": int, "relevance_score": float}, ...]
                     rerank_results = await self.rerank_model_func(
                         query=query, documents=documents, top_n=min(chunk_limit, len(documents))
                     )
 
-                    # Reorder based on rerank results
-                    reranked_ids = [result.get("id") for result in rerank_results]
-                    final_chunks = []
-                    for chunk_id in reranked_ids:
-                        for chunk in chunks_to_rerank:
-                            if chunk["chunk_id"] == chunk_id:
-                                final_chunks.append(chunk)
-                                break
+                    # Reorder based on rerank results using index-based format
+                    if rerank_results and len(rerank_results) > 0:
+                        reranked_indices = [result.get("index") for result in rerank_results if isinstance(result, dict)]
+                        final_chunks = []
+                        for idx in reranked_indices:
+                            if 0 <= idx < len(chunks_to_rerank):
+                                final_chunks.append(chunks_to_rerank[idx])
 
-                    logger.info(
-                        f"Reranking completed, {len(final_chunks)} chunks selected"
-                    )
-                    reranking_applied = True
+                        logger.info(
+                            f"Reranking completed, {len(final_chunks)} chunks selected"
+                        )
+                        reranking_applied = True
+                    else:
+                        logger.warning("Rerank returned empty results, using similarity scores")
+                        final_chunks = final_chunks[:chunk_limit]
+                        reranking_applied = False
 
                 except Exception as e:
                     logger.warning(
@@ -3310,6 +3305,35 @@ class LightRAG:
                     reranking_applied = False
             else:
                 final_chunks = final_chunks[:chunk_limit]
+            
+            # Apply token-based truncation (similar to query/data)
+            if self.tokenizer and final_chunks:
+                max_total_tokens = getattr(
+                    param,
+                    "max_total_tokens",
+                    30000,  # Default limit for filter_data
+                )
+                
+                # Reserve tokens for system overhead
+                system_overhead_tokens = 1000
+                available_chunk_tokens = max_total_tokens - system_overhead_tokens
+                
+                if available_chunk_tokens > 0:
+                    original_count = len(final_chunks)
+                    from lightrag.utils import truncate_list_by_token_size
+                    
+                    final_chunks = truncate_list_by_token_size(
+                        final_chunks,
+                        key=lambda x: x.get("content", ""),
+                        max_token_size=available_chunk_tokens,
+                        tokenizer=self.tokenizer,
+                    )
+                    
+                    if len(final_chunks) < original_count:
+                        logger.debug(
+                            f"Token truncation applied: {len(final_chunks)} chunks from {original_count} "
+                            f"(available tokens: {available_chunk_tokens})"
+                        )
 
             # ============ STEP 6: Format results ============
             result_chunks = [

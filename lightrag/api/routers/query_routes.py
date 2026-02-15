@@ -225,6 +225,12 @@ class FilterDataRequest(BaseModel):
         description="Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued.",
     )
 
+    max_total_tokens: Optional[int] = Field(
+        default=None,
+        ge=100,
+        description="Maximum token limit for chunk content (default: 30000). Controls how much text can be returned after reranking.",
+    )
+
     only_need_context: Optional[bool] = Field(
         default=False,
         description="If True, only returns context without generating response",
@@ -1321,6 +1327,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 top_k=request.top_k if request.top_k is not None else 10,
                 chunk_top_k=request.chunk_top_k if request.chunk_top_k is not None else (request.top_k if request.top_k is not None else 10),
                 enable_rerank=request.enable_rerank if request.enable_rerank is not None else False,
+                max_total_tokens=request.max_total_tokens if request.max_total_tokens is not None else 30000,
             )
 
             # Call afilter_data with filter_config

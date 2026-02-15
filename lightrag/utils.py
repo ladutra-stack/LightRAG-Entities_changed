@@ -2739,7 +2739,7 @@ async def process_chunks_unified(
 
     # 2. Filter by minimum rerank score if reranking is enabled
     if query_param.enable_rerank and unique_chunks:
-        min_rerank_score = global_config.get("min_rerank_score", 0.5)
+        min_rerank_score = global_config.get("min_rerank_score", 0.0)
         if min_rerank_score > 0.0:
             original_count = len(unique_chunks)
 
