@@ -241,6 +241,72 @@ class FilterDataRequest(BaseModel):
         description="If True, includes reference information in response",
     )
 
+    @field_validator("filter_entities", mode="before")
+    @classmethod
+    def parse_filter_entities(cls, v):
+        """
+        Convert filter_entities to list of strings.
+        Handles: list, string (comma-separated), or None
+        """
+        if v is None:
+            return None
+        
+        # If already a list, clean and return
+        if isinstance(v, list):
+            return [str(item).strip() for item in v if item]
+        
+        # If string, split by comma and clean
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                return None
+            # Split by comma and strip whitespace
+            return [item.strip() for item in v.split(",") if item.strip()]
+        
+        return v
+
+    @field_validator("top_k", "chunk_top_k", "max_total_tokens", mode="before")
+    @classmethod
+    def parse_integers(cls, v):
+        """Convert string numbers to integers"""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                return None
+            try:
+                return int(v)
+            except ValueError:
+                raise ValueError(f"Invalid integer value: {v}")
+        return v
+
+    @field_validator("enable_rerank", "only_need_context", "include_references", mode="before")
+    @classmethod
+    def parse_booleans(cls, v):
+        """Convert string booleans to bool"""
+        if v is None:
+            return None
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            v = v.strip().lower()
+            if v in ("true", "1", "yes", "on"):
+                return True
+            elif v in ("false", "0", "no", "off"):
+                return False
+            else:
+                raise ValueError(f"Invalid boolean value: {v}")
+        return v
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def parse_query(cls, v):
+        """Strip whitespace from query"""
+        if isinstance(v, str):
+            return v.strip()
+        return v
+
 
 def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
     combined_auth = get_combined_auth_dependency(api_key)
