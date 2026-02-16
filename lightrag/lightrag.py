@@ -2988,24 +2988,20 @@ class LightRAG:
     async def afilter_data(
         self,
         query: str,
-        filter_config: dict[str, Any] = None,
+        filter_entities: list[str] | None = None,
         param: QueryParam = QueryParam(),
     ) -> dict[str, Any]:
         """
-        Advanced filtering query: Filter chunks by entity properties and perform naive RAG.
+        Advanced filtering query: Filter chunks by entity list and perform semantic search.
 
-        This method allows users to filter chunks based on entity properties (name, type, description,
-        function, chunk_ids, etc) and then perform semantic search only on filtered chunks.
+        This method allows users to filter chunks based on a list of specific entities
+        and then perform semantic search only on filtered chunks.
 
         Args:
             query: Query string for semantic search
-            filter_config: Dictionary with entity filtering conditions. Example:
-                {
-                    "entity_type": ["component", "equipment"],  # OR condition between values
-                    "entity_name": ["Impeller", "Compressor"],  # OR condition between values
-                    "has_property": ["function", "source_id"]   # Entity must have these properties
-                }
-                Multiple filter keys use AND logic (all must match)
+            filter_entities: List of entity IDs/names to filter by. Example:
+                ["entity_1", "entity_2", "entity_3"]
+                If None or empty, all entities are included.
             param: QueryParam with configuration (top_k, chunk_top_k, enable_rerank, etc)
 
         Returns:
@@ -3040,11 +3036,11 @@ class LightRAG:
         import math
 
         try:
-            if not filter_config:
-                filter_config = {}
+            if not filter_entities:
+                filter_entities = []
 
             logger.info(
-                f"Filter data query: filter_config={filter_config}, query='{query[:100]}'"
+                f"Filter data query: filter_entities={filter_entities}, query='{query[:100]}'"
             )
 
             # ============ STEP 1: Get all entities and apply filters ============
@@ -3058,7 +3054,7 @@ class LightRAG:
                     "chunks": [],
                     "metadata": {
                         "query": query,
-                        "filters_applied": filter_config,
+                        "filters_applied": filter_entities,
                         "entities_found": 0,
                         "entities_after_filter": 0,
                         "total_chunks_before_filter": 0,
@@ -3069,49 +3065,25 @@ class LightRAG:
                     },
                 }
 
-            # Filter entities based on config
+            # Filter entities based on entity list
             filtered_entities = []
             total_entities = len(all_nodes)
 
-            for entity in all_nodes:
-                matches_all_filters = True
-
-                # Check each filter condition (AND logic between filters)
-                for filter_key, filter_values in filter_config.items():
-                    if filter_key == "has_property":
-                        # Check if entity has all required properties
-                        for required_prop in filter_values:
-                            if required_prop not in entity:
-                                matches_all_filters = False
-                                break
-                    elif filter_key == "entity_labels" or filter_key == "entity_id":
-                        # OR logic within same filter - match entity_id directly
-                        # Support both "entity_labels" (primary) and "entity_id" (fallback) for compatibility
-                        if entity.get("entity_id") not in filter_values and entity.get("id") not in filter_values:
-                            matches_all_filters = False
-                    elif filter_key == "entity_name":
-                        # OR logic within same filter
-                        if entity.get("entity_id") not in filter_values:
-                            matches_all_filters = False
-                    elif filter_key == "entity_type":
-                        # OR logic within same filter
-                        if entity.get("entity_type") not in filter_values:
-                            matches_all_filters = False
-                    elif filter_key == "description_contains":
-                        # Check if description contains any of the keywords
-                        description = (entity.get("description") or "").lower()
-                        if not any(kw.lower() in description for kw in filter_values):
-                            matches_all_filters = False
-                    else:
-                        # Generic filter: check if entity[filter_key] matches any filter_value
-                        if entity.get(filter_key) not in filter_values:
-                            matches_all_filters = False
-
-                    if not matches_all_filters:
-                        break
-
-                if matches_all_filters:
-                    filtered_entities.append(entity)
+            if filter_entities:
+                # If filter_entities is provided, only include entities in the list
+                entity_ids = set()
+                for node in all_nodes:
+                    entity_id = node.get("entity_id") or node.get("id")
+                    if entity_id:
+                        entity_ids.add(entity_id)
+                
+                for entity in all_nodes:
+                    entity_id = entity.get("entity_id") or entity.get("id")
+                    if entity_id in filter_entities:
+                        filtered_entities.append(entity)
+            else:
+                # If no filter is specified, include all entities
+                filtered_entities = all_nodes
 
             logger.info(
                 f"Filtered entities: {total_entities} -> {len(filtered_entities)} entities"
@@ -3150,7 +3122,7 @@ class LightRAG:
                     "chunks": [],
                     "metadata": {
                         "query": query,
-                        "filters_applied": filter_config,
+                        "filters_applied": filter_entities,
                         "entities_found": total_entities,
                         "entities_after_filter": len(filtered_entities),
                         "total_chunks_before_filter": total_chunks_before,
@@ -3195,7 +3167,7 @@ class LightRAG:
                     "chunks": [],
                     "metadata": {
                         "query": query,
-                        "filters_applied": filter_config,
+                        "filters_applied": filter_entities,
                         "entities_found": total_entities,
                         "entities_after_filter": len(filtered_entities),
                         "total_chunks_before_filter": total_chunks_before,
@@ -3358,7 +3330,7 @@ class LightRAG:
                 "chunks": result_chunks,
                 "metadata": {
                     "query": query,
-                    "filters_applied": filter_config,
+                    "filters_applied": filter_entities,
                     "entities_found": total_entities,
                     "entities_after_filter": len(filtered_entities),
                     "total_chunks_before_filter": total_chunks_before,
@@ -3378,7 +3350,7 @@ class LightRAG:
                 "message": str(e),
                 "chunks": [],
                 "metadata": {
-                    "filter_config": filter_config,
+                    "filter_entities": filter_entities,
                     "error_details": str(e),
                 },
             }
@@ -3386,13 +3358,13 @@ class LightRAG:
     def filter_data(
         self,
         query: str,
-        filter_config: dict[str, Any] = None,
+        filter_entities: list[str] | None = None,
         param: QueryParam = QueryParam(),
     ) -> dict[str, Any]:
         """Synchronous wrapper for afilter_data."""
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
-            self.afilter_data(query, filter_config, param)
+            self.afilter_data(query, filter_entities, param)
         )
 
     async def aquery_llm(

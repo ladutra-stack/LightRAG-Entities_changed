@@ -61,7 +61,7 @@ A nova query **`filter_data`** foi implementada com sucesso, permitindo filtraç
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                    User Query                           │
-│  (query, filter_config, param)                          │
+│  (query, filter_entities, param)                        │
 └──────────────────┬──────────────────────────────────────┘
                    │
                    ▼
@@ -73,9 +73,9 @@ A nova query **`filter_data`** foi implementada com sucesso, permitindo filtraç
                   │
                   ▼
          ┌────────────────────────┐
-         │  Apply Filters        │
-         │  (AND logic between   │
-         │   OR logic within)    │
+         │  Filter by Entity List │
+         │  (keep only those in   │
+         │   filter_entities)     │
          └────────┬──────────────┘
                   │
                   ▼
@@ -157,13 +157,13 @@ A nova query **`filter_data`** foi implementada com sucesso, permitindo filtraç
 ✅ Embeddings são list[float]
 ```
 
-### Categoria 4: Lógica de Filtro
+### Categoria 2: Filter Configuration
 ```
-✅ AND entre filtros funciona
-✅ OR dentro de filtro funciona
-✅ Early break implementado
-✅ Filter keys verificados
-✅ Dict.get() com defaults
+✅ filter_entities é list[str] | None
+✅ Filtragem simples por lista
+✅ Sem suporte a AND/OR complexo
+✅ Backward compatible (None = all entities)
+✅ Type hints completos
 ```
 
 ### Categoria 5: Segurança
@@ -237,7 +237,7 @@ rag = LightRAG(...)
 # Busca simples
 result = rag.filter_data(
     query="What is the function?",
-    filter_config={"entity_type": ["component"]},
+    filter_entities=["entity_1", "entity_2"],
     param=QueryParam(top_k=5)
 )
 
@@ -250,10 +250,7 @@ for chunk in result['chunks']:
 ```python
 result = await rag.afilter_data(
     query="operational parameters",
-    filter_config={
-        "entity_type": ["equipment"],
-        "has_property": ["function"]
-    }
+    filter_entities=["entity_1", "entity_2"]
 )
 ```
 

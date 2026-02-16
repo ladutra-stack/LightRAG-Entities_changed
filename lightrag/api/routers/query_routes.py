@@ -198,9 +198,9 @@ class FilterDataRequest(BaseModel):
         description="Search query for semantic filtering (can be empty for type-only filtering)",
     )
 
-    filter_config: Optional[Dict[str, Any]] = Field(
+    filter_entities: Optional[List[str]] = Field(
         default=None,
-        description="Entity filter configuration. Supports: entity_labels (list - PRIMARY, from graph/label/list), entity_name (list), entity_type (list), has_property (list)",
+        description="List of entity IDs/names to filter by for chunk retrieval",
     )
 
     top_k: Optional[int] = Field(
@@ -1232,7 +1232,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                     "properties": {
                                         "entities": {
                                             "type": "array",
-                                            "description": "Filtered entities matching filter_config",
+                                            "description": "Filtered entities matching filter_entities",
                                         },
                                         "chunks": {
                                             "type": "array",
@@ -1263,54 +1263,41 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
     )
     async def filter_query_data(request: FilterDataRequest):
         """
-        Filter entities by type and retrieve associated data.
+        Filter chunks by entity list and retrieve associated data.
 
-        This endpoint allows you to filter entities by type and optionally search
-        semantically within the filtered subset.
-
-        **Filter Configuration:**
-        ```json
-        {
-            "entity_type": ["component", "equipment"],
-            "entity_name": ["Bearing", "Pump"],
-            "has_property": ["function"]
-        }
-        ```
-
-        All filters use OR logic within the same key, AND logic between keys.
+        This endpoint allows you to filter chunks by specifying a list of entity IDs/names
+        and optionally perform semantic search within the filtered subset.
 
         **Usage Examples:**
 
-        Filter by entity type only:
+        Filter by entity list only:
         ```json
         {
-            "filter_config": {"entity_type": ["equipment"]},
+            "filter_entities": ["entity_1", "entity_2", "entity_3"],
             "top_k": 10
         }
         ```
 
-        Filter by type and search semantically:
+        Filter by entities and search semantically:
         ```json
         {
             "query": "compression and pressure",
-            "filter_config": {"entity_type": ["equipment"]},
+            "filter_entities": ["entity_1", "entity_2"],
             "top_k": 5
         }
         ```
 
-        Filter by multiple criteria:
+        Filter without entity restrictions (all chunks):
         ```json
         {
-            "filter_config": {
-                "entity_type": ["component", "equipment"],
-                "has_property": ["function"]
-            },
+            "query": "search term",
+            "filter_entities": null,
             "top_k": 20
         }
         ```
 
         Args:
-            request (FilterDataRequest): Filter configuration with optional query
+            request (FilterDataRequest): Entity list filter with optional query
 
         Returns:
             QueryDataResponse: Filtered entities, chunks, and references
@@ -1321,19 +1308,27 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 - 500: Processing error
         """
         try:
+            # BUG FIX #4: Simplify nested ternary for chunk_top_k
+            chunk_top_k = request.chunk_top_k or request.top_k or 10
+            
             # Build QueryParam with reranking parameters
             param = QueryParam(
                 mode=request.mode,
-                top_k=request.top_k if request.top_k is not None else 10,
-                chunk_top_k=request.chunk_top_k if request.chunk_top_k is not None else (request.top_k if request.top_k is not None else 10),
+                top_k=request.top_k or 10,
+                chunk_top_k=chunk_top_k,
                 enable_rerank=request.enable_rerank if request.enable_rerank is not None else False,
-                max_total_tokens=request.max_total_tokens if request.max_total_tokens is not None else 30000,
+                max_total_tokens=request.max_total_tokens or 30000,
             )
 
-            # Call afilter_data with filter_config
+            # BUG FIX #3: Validate empty filter_entities list
+            filter_entities = request.filter_entities
+            if filter_entities is not None and len(filter_entities) == 0:
+                logger.warning("Empty filter_entities list provided - using all entities")
+
+            # Call afilter_data with filter_entities
             response = await rag.afilter_data(
                 query=request.query or "",
-                filter_config=request.filter_config or {},
+                filter_entities=filter_entities,
                 param=param
             )
 
@@ -1350,9 +1345,18 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             # QueryDataResponse expects: {status, message, data: {entities, chunks, ...}, metadata}
             chunks = response.get("chunks", [])
             
-            # Extract unique source_entity names from the returned chunks
-            source_entities_set = {chunk.get("source_entity") for chunk in chunks if chunk.get("source_entity")}
-            source_entities = list(source_entities_set)
+            # BUG FIX #2: Preserve order of source_entities (non-deterministic set behavior)
+            source_entities = []
+            seen_entities = set()
+            for chunk in chunks:
+                entity = chunk.get("source_entity")
+                if entity and entity not in seen_entities:
+                    source_entities.append(entity)
+                    seen_entities.add(entity)
+            
+            # BUG FIX #6: Add context when no chunks found
+            if not chunks:
+                logger.debug(f"No chunks found with filter_entities={filter_entities}")
             
             response_data = {
                 "entities": source_entities,
@@ -1363,7 +1367,13 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
             # Update response structure for QueryDataResponse
             response["data"] = response_data
-            reranking_status = "reranked to top " + str(request.chunk_top_k) if response.get("metadata", {}).get("reranking_applied") else "no reranking"
+            
+            # BUG FIX #1: Fix 'reranked to top None' message when chunk_top_k is None
+            if response.get("metadata", {}).get("reranking_applied"):
+                reranking_status = f"reranked to top {chunk_top_k}"
+            else:
+                reranking_status = "no reranking"
+            
             response["message"] = (
                 f"Recuperados {len(chunks)} chunks relevantes ({reranking_status})"
             )

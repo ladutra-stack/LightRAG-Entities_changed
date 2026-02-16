@@ -29,7 +29,7 @@ A nova query **`filter_data`** permite filtrar chunks de documentos baseado em p
 ```python
 result = await rag.afilter_data(
     query: str,
-    filter_config: dict[str, Any] | None = None,
+    filter_entities: list[str] | None = None,
     param: QueryParam = QueryParam()
 ) -> dict[str, Any]
 ```
@@ -39,7 +39,7 @@ result = await rag.afilter_data(
 ```python
 result = rag.filter_data(
     query: str,
-    filter_config: dict[str, Any] | None = None,
+    filter_entities: list[str] | None = None,
     param: QueryParam = QueryParam()
 ) -> dict[str, Any]
 ```
@@ -54,13 +54,12 @@ result = rag.filter_data(
 - **Exemplo**: `"What is the function of this component?"`
 - **Nota**: Se vazio, retorna chunks sem scoring de similaridade
 
-### `filter_config` (opcional)
-- **Tipo**: `dict[str, Any] | None`
-- **Descrição**: Configuração de filtros para entidades
+### `filter_entities` (opcional)
+- **Tipo**: `list[str] | None`
+- **Descrição**: Lista de IDs/nomes de entidades a filtrar
 - **Padrão**: `None` (sem filtros, usa todas as entidades)
-- **Lógica**: 
-  - **AND** entre diferentes chaves de filtro (todas devem ser satisfeitas)
-  - **OR** dentro de cada filtro (qualquer valor pode satisfazer)
+- **Exemplo**: `["entity_1", "entity_2", "entity_3"]`
+- **Nota**: Caso a lista esteja vazia, todas as entidades serão incluídas
 
 ### `param` (opcional)
 - **Tipo**: `QueryParam`
@@ -73,76 +72,55 @@ result = rag.filter_data(
 
 ---
 
-## 🎯 Filtros Suportados
+## 🎯 Como Usar filter_entities
 
-### 1. **entity_name** - Filtrar por nome da entidade
+### Caso 1: Filtrar por IDs de Entidades Específicas
 ```python
-filter_config = {
-    "entity_name": ["Impeller", "Pump", "Compressor"]
-}
-```
-- **Lógica**: OR entre valores (qualquer nome pode match)
-- **Tipo de Valor**: List[str]
-- **Exemplo**: Busca entidades com estes nomes específicos
+filter_entities = ["entity_123", "entity_456", "entity_789"]
 
-### 2. **entity_type** - Filtrar por tipo de entidade
-```python
-filter_config = {
-    "entity_type": ["component", "equipment", "system"]
-}
+result = rag.filter_data(
+    query="What is the function?",
+    filter_entities=filter_entities
+)
 ```
-- **Lógica**: OR entre valores
-- **Tipo de Valor**: List[str]
-- **Exemplo**: Busca entidades que são componentes OU equipamentos
+- **Use quando**: Você tem uma lista pré-determinada de entidades
+- **Resultado**: Apenas chunks associados a estas entidades serão retornados
 
-### 3. **description_contains** - Filtrar por conteúdo da descrição
+### Caso 2: Sem Filtro de Entidades
 ```python
-filter_config = {
-    "description_contains": ["rotating", "pressure", "flow"]
-}
+result = rag.filter_data(
+    query="search term",
+    filter_entities=None  # Ou omitir o parâmetro
+)
 ```
-- **Lógica**: OR entre valores (descrição contém qualquer palavra)
-- **Tipo de Valor**: List[str]
-- **Sensibilidade**: Case-insensitive
-- **Exemplo**: Busca entidades com descrição que contém "rotating" OU "pressure"
+- **Use quando**: Quer buscar em todas as entidades do grafo
+- **Resultado**: Todos os chunks são considerados
 
-### 4. **has_property** - Filtrar por presença de propriedade
+### Caso 3: Filtro Vazio
 ```python
-filter_config = {
-    "has_property": ["function", "source_id", "file_path"]
-}
+result = rag.filter_data(
+    query="search term",
+    filter_entities=[]  # Lista vazia
+)
 ```
-- **Lógica**: AND entre valores (deve ter TODAS as propriedades)
-- **Tipo de Valor**: List[str]
-- **Exemplo**: Busca entidades que têm function E source_id E file_path
-
-### 5. **Filtros Customizados** - Qualquer propriedade de entidade
-```python
-filter_config = {
-    "custom_field": ["value1", "value2"]
-}
-```
-- **Lógica**: OR entre valores
-- **Tipo de Valor**: List[Any]
-- **Nota**: Comparação direta com valores da entidade
+- **Resultado**: Nenhum chunk é retornado
 
 ---
 
-## 📊 Exemplos de Uso
+## 🎯 Exemplos de Uso
 
-### Exemplo 1: Filtro Simples por Tipo
+### Exemplo 1: Filtro Simples por Lista de Entidades
 ```python
 from lightrag import LightRAG
 from lightrag.base import QueryParam
 
 rag = LightRAG(...)
 
-# Busca em componentes
+# Busca em entidades específicas
+entity_ids = ["impeller_1", "pump_2", "compressor_1"]
 result = rag.filter_data(
     query="What is the main function?",
-    filter_config={
-        "entity_type": ["component"]
-    },
+    filter_entities=entity_ids,
     param=QueryParam(top_k=5)
 )
 
@@ -156,20 +134,17 @@ for chunk in result['chunks']:
 ```
 Status: success
 Chunks encontrados: 5
-  - Impeller: The impeller is a rotating component that...
-  - Volute: The volute redirects flow with pressure...
+  - impeller_1: The impeller is a rotating component that...
+  - pump_2: The pump redirects flow with pressure...
   ...
 ```
 
-### Exemplo 2: Múltiplos Filtros (AND Logic)
+### Exemplo 2: Sem Filtro de Entidades
 ```python
-# Busca em equipamentos com propriedades obrigatórias
+# Busca em TODAS as entidades
 result = rag.filter_data(
     query="performance specifications",
-    filter_config={
-        "entity_type": ["equipment"],           # AND
-        "has_property": ["function", "source_id"]  # AND
-    },
+    filter_entities=None,  # Ou omitir
     param=QueryParam(top_k=10, enable_rerank=True)
 )
 
@@ -178,24 +153,23 @@ print(f"Chunks após filtro: {result['metadata']['total_chunks_after_filter']}")
 print(f"Chunks retornados: {result['metadata']['chunks_returned']}")
 ```
 
-### Exemplo 3: Busca com Descrição
+### Exemplo 3: Busca com Query Vazia
 ```python
-# Busca entidades cuja descrição mencionam rotação
+# Apenas retorna chunks das entidades sem scoring de similaridade
+entity_ids = ["entity_a", "entity_b"]
 result = rag.filter_data(
-    query="rotation speed",
-    filter_config={
-        "description_contains": ["rotate", "spinning", "rotational"]
-    }
+    query="",  # Query vazia
+    filter_entities=entity_ids
 )
 
 # Iterar pelos resultados
 for i, chunk in enumerate(result['chunks'], 1):
-    print(f"{i}. [{chunk['source_entity']}] Score: {chunk['similarity_score']:.3f}")
+    print(f"{i}. [{chunk['source_entity']}]")
     print(f"   {chunk['content'][:150]}...")
     print(f"   From: {chunk['file_path']}\n")
 ```
 
-### Exemplo 4: Filtro Complexo Assíncrono
+### Exemplo 4: Versão Assíncrona Completa
 ```python
 import asyncio
 
@@ -226,12 +200,10 @@ result = asyncio.run(search_equipment())
 
 ### Exemplo 5: Sem Query (Recuperar Chunks)
 ```python
-# Recuperar todos os chunks de componentes, sem semantic search
+# Recuperar todos os chunks de entidades específicas, sem semantic search
 result = rag.filter_data(
     query="",  # Vazio = sem semantic search
-    filter_config={
-        "entity_type": ["component"]
-    }
+    filter_entities=["entity_1", "entity_2", "entity_3"]
 )
 
 # Todos os chunks têm similarity_score = 0.0
@@ -256,7 +228,7 @@ for chunk in result['chunks']:
       "content": "The impeller rotates at high speeds to...",
       "file_path": "compressor_manual.pdf",
       "similarity_score": 0.8743,
-      "source_entity": "Impeller",
+      "source_entity": "entity_1",
       "rank": 1
     },
     {
@@ -264,17 +236,15 @@ for chunk in result['chunks']:
       "content": "Performance characteristics include...",
       "file_path": "technical_specs.pdf",
       "similarity_score": 0.7891,
-      "source_entity": "Compressor",
+      "source_entity": "entity_2",
       "rank": 2
     }
   ],
   "metadata": {
     "query": "What is the function?",
-    "filters_applied": {
-      "entity_type": ["component"]
-    },
+    "filters_applied": ["entity_1", "entity_2"],
     "entities_found": 150,
-    "entities_after_filter": 45,
+    "entities_after_filter": 2,
     "total_chunks_before_filter": 234,
     "total_chunks_after_filter": 89,
     "chunks_returned": 10,
@@ -291,9 +261,7 @@ for chunk in result['chunks']:
   "message": "No chunks found for filtered entities",
   "chunks": [],
   "metadata": {
-    "filter_config": {
-      "entity_type": ["nonexistent_type"]
-    },
+    "filter_entities": ["nonexistent_entity"],
     "error_details": "Details of the error..."
   }
 }
